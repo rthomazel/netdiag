@@ -44,8 +44,19 @@ go run ./cmd/client -server <vps-ip>
 ```
 
 Runs tests 1-3 in order and prints one line per test as it completes, including
-the source address the server observed. (Lands in the next PR.)
+the source address the server observed and the round trip. Exit code is 1 if
+any test failed, 0 otherwise.
+
+```text
+Client Network Connectivity Test
+[PASS] HTTPS TCP/443    src=203.0.113.7:54780    rtt=87ms
+[PASS] TCP/8443         src=203.0.113.7:39626    rtt=85ms
+[PASS] UDP/60000        src=203.0.113.7:56769    rtt=88ms
+
+Conclusion:
+Baseline outbound connectivity established (tests 1-3). WireGuard tests pending.
+```
 
 ## Status
 
-Tests 1-3 server side done; client lands next, then the WireGuard half (4-7).
+Tests 1-3 done end to end; the WireGuard half (4-7) is next.
