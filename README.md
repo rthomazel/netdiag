@@ -20,6 +20,32 @@ Plan: rthomazel/interface `doc/ideas/inbox/netdiag.md` (idea [31]).
 6. Persistent UDP — hold tunnel, idle, resend; with PersistentKeepalive
 7. Bidirectional traffic through the tunnel
 
+## Running
+
+### Server (VPS)
+
+```sh
+go run ./cmd/server            # binds :443, :8443, :60000
+```
+
+| Flag    | Default | Serves                    |
+| ------- | ------- | ------------------------- |
+| `-https`| `:443`  | test 1 (self-signed TLS)  |
+| `-tcp`  | `:8443` | test 2 (ACK exchange)     |
+| `-udp`  | `:60000`| test 3 (ACK datagrams)    |
+
+The destination address identifies the test; the server logs the source IP:port
+it observes for every inbound connection/datagram — that log is the NAT report.
+
+### Client (inside the network under test)
+
+```sh
+go run ./cmd/client -server <vps-ip>
+```
+
+Runs tests 1-3 in order and prints one line per test as it completes, including
+the source address the server observed. (Lands in the next PR.)
+
 ## Status
 
-Bootstrap. Tests 1-3 land first, then the WireGuard half (4-7).
+Tests 1-3 server side done; client lands next, then the WireGuard half (4-7).
