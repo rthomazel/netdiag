@@ -28,11 +28,11 @@ Plan: rthomazel/interface `doc/ideas/inbox/netdiag.md` (idea [31]).
 go run ./cmd/server            # binds :443, :8443, :60000
 ```
 
-| Flag    | Default | Serves                    |
-| ------- | ------- | ------------------------- |
-| `-https`| `:443`  | test 1 (self-signed TLS)  |
-| `-tcp`  | `:8443` | test 2 (ACK exchange)     |
-| `-udp`  | `:60000`| test 3 (ACK datagrams)    |
+| Env var         | Default  | Serves                    |
+| --------------- | -------- | ------------------------- |
+| `NETDIAG_HTTPS` | `:443`   | test 1 (self-signed TLS)  |
+| `NETDIAG_TCP`   | `:8443`  | test 2 (ACK exchange)     |
+| `NETDIAG_UDP`   | `:60000` | test 3 (ACK datagrams)    |
 
 The destination address identifies the test; the server logs the source IP:port
 it observes for every inbound connection/datagram — that log is the NAT report.
