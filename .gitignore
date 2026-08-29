@@ -1,0 +1,13 @@
+# binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+netdiag-server
+netdiag-client
+
+# test + tmp
+*.out
+*.test
+/tmp/
