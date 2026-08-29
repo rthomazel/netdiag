@@ -40,9 +40,16 @@ type Config struct {
 	UDP   string
 }
 
-// Run starts the three test listeners and blocks until ctx is canceled.
+// Server holds the pre-bound listeners that Serve runs.
+type Server struct {
+	HTTPS net.Listener
+	TCP   net.Listener
+	UDP   *net.UDPConn
+}
+
+// Run binds the listeners from cfg and serves them until ctx is canceled.
 func Run(ctx context.Context, cfg Config) error {
-	cert, err := selfSignedCert()
+	cert, err := SelfSignedCert()
 	if err != nil {
 		return fmt.Errorf("self-signed cert: %w", err)
 	}
@@ -69,15 +76,21 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("udp %s: %w", cfg.UDP, err)
 	}
 
+	return Serve(ctx, Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpConn})
+}
+
+// Serve runs the three listeners until ctx is canceled, then closes them.
+// It takes pre-bound listeners so tests can run the harness on ephemeral ports.
+func Serve(ctx context.Context, s Server) error {
 	go func() {
 		<-ctx.Done()
-		tlsLn.Close()
-		tcpLn.Close()
-		udpConn.Close()
+		s.HTTPS.Close()
+		s.TCP.Close()
+		s.UDP.Close()
 	}()
-	go serveHTTPS(ctx, tlsLn)
-	go acceptTCP(ctx, tcpLn)
-	go readUDP(ctx, udpConn)
+	go serveHTTPS(ctx, s.HTTPS)
+	go acceptTCP(ctx, s.TCP)
+	go readUDP(ctx, s.UDP)
 
 	<-ctx.Done()
 	return nil
@@ -167,10 +180,10 @@ func readUDP(ctx context.Context, conn *net.UDPConn) {
 	}
 }
 
-// selfSignedCert generates an in-memory certificate for the HTTPS listener.
+// SelfSignedCert generates an in-memory certificate for the HTTPS listener.
 // The client skips verification: the test measures reachability, not the
 // certificate.
-func selfSignedCert() (tls.Certificate, error) {
+func SelfSignedCert() (tls.Certificate, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return tls.Certificate{}, err
