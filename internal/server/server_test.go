@@ -13,7 +13,8 @@ import (
 )
 
 func TestHTTPSListener(t *testing.T) {
-	srv := httptest.NewTLSServer(httpsHandler())
+	// nil WG: the probe route must behave exactly as before tests 4 and 5.
+	srv := httptest.NewTLSServer(httpsHandler(nil))
 	defer srv.Close()
 
 	resp, err := srv.Client().Get(srv.URL + "/probe")

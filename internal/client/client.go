@@ -20,20 +20,22 @@ import (
 	"github.com/rthomazel/netdiag/internal/protocol"
 )
 
-// Target holds the three VPS addresses the tests dial. One port per test;
+// Target holds the five VPS addresses the tests dial. One port per test;
 // the CLI derives them from a single host flag, but taking full host:port
 // pairs here keeps the package testable on ephemeral local ports.
 type Target struct {
-	HTTPS string
-	TCP   string
-	UDP   string
+	HTTPS   string
+	TCP     string
+	UDP     string
+	WG51820 string // WireGuard endpoint for test 4
+	WG443   string // WireGuard endpoint for test 5
 }
 
 // Run executes the tests in order, printing each result as it completes
 // and the conclusion at the end. Returns the results for exit-code use.
 func Run(ctx context.Context, t Target, timeout time.Duration, w io.Writer) []protocol.Result {
 	fmt.Fprintln(w, "Client Network Connectivity Test")
-	results := make([]protocol.Result, 0, 3)
+	results := make([]protocol.Result, 0, 5)
 	tests := []func(ctx context.Context) protocol.Result{
 		func(ctx context.Context) protocol.Result { return httpsTest(ctx, t.HTTPS, timeout) },
 		func(ctx context.Context) protocol.Result { return tcpTest(ctx, t.TCP, timeout) },
@@ -43,6 +45,36 @@ func Run(ctx context.Context, t Target, timeout time.Duration, w io.Writer) []pr
 		res := test(ctx)
 		results = append(results, res)
 		printLine(w, res, label(res, t))
+	}
+	// Tests 4 and 5 need the server's WireGuard public keys, fetched over
+	// the HTTPS control plane. If that fetch fails the WG tests are
+	// reported as untestable rather than run against nothing.
+	if ctx.Err() == nil {
+		keys, err := wgFetchKeys(ctx, t.HTTPS, timeout)
+		if err != nil {
+			for _, name := range []string{protocol.TestWG51820, protocol.TestWG443} {
+				res := protocol.Result{Name: name}
+				res.Status = protocol.StatusFail
+				res.Detail = "untestable: could not fetch server wg keys: " + err.Error()
+				results = append(results, res)
+				printLine(w, res, label(res, t))
+			}
+		} else {
+			wgTests := []struct {
+				name   string
+				pubHex string
+				addr   string
+				subnet protocol.Subnet
+			}{
+				{protocol.TestWG51820, keys.WG51820, t.WG51820, protocol.WGSubnet51820},
+				{protocol.TestWG443, keys.WG443, t.WG443, protocol.WGSubnet443},
+			}
+			for _, tt := range wgTests {
+				res := wgTest(ctx, tt.name, tt.addr, t.HTTPS, tt.pubHex, tt.subnet, timeout)
+				results = append(results, res)
+				printLine(w, res, label(res, t))
+			}
+		}
 	}
 	fmt.Fprintln(w)
 	printConclusion(w, results)
@@ -67,6 +99,10 @@ func label(res protocol.Result, t Target) string {
 		return "TCP/" + portOf(t.TCP)
 	case protocol.TestUDP:
 		return "UDP/" + portOf(t.UDP)
+	case protocol.TestWG51820:
+		return "WireGuard UDP/" + portOf(t.WG51820)
+	case protocol.TestWG443:
+		return "WireGuard UDP/" + portOf(t.WG443)
 	}
 	return res.Name
 }
@@ -95,7 +131,7 @@ func printConclusion(w io.Writer, results []protocol.Result) {
 	}
 	fmt.Fprintln(w, "Conclusion:")
 	if failed == 0 {
-		fmt.Fprintln(w, "Baseline outbound connectivity established (tests 1-3). WireGuard tests pending.")
+		fmt.Fprintln(w, "WireGuard handshake works on both standard and non-standard ports. Direct WireGuard connectivity appears viable (tests 1-5).")
 		return
 	}
 	fmt.Fprintf(w, "%d of %d tests failed - the FAIL lines above show where the network blocks us.\n", failed, len(results))
