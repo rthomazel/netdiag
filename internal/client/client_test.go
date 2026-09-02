@@ -73,10 +73,10 @@ func startServer(t *testing.T) client.Target {
 
 func TestRunAgainstRealServer(t *testing.T) {
 	var out bytes.Buffer
-	results := client.Run(context.Background(), startServer(t), 5*time.Second, &out)
+	results := client.Run(context.Background(), startServer(t), 5*time.Second, 2*time.Second, &out)
 
-	if len(results) != 5 {
-		t.Fatalf("len(results) = %d, want 5", len(results))
+	if len(results) != 7 {
+		t.Fatalf("len(results) = %d, want 7", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusPass {
@@ -96,9 +96,12 @@ func TestRunAgainstRealServer(t *testing.T) {
 		"[PASS] TCP/",
 		"[PASS] UDP/",
 		"[PASS] WireGuard UDP/",
+		"[PASS] WireGuard persistent",
+		"[PASS] WireGuard bidir",
 		"src=127.0.0.1:",
 		"rtt=",
 		"Conclusion:",
+		"tests 1-7",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report missing %q:\n%s", want, report)
@@ -115,10 +118,10 @@ func TestRunAgainstNothing(t *testing.T) {
 	results := client.Run(context.Background(), client.Target{
 		HTTPS: "127.0.0.1:1", TCP: "127.0.0.1:1", UDP: "127.0.0.1:1",
 		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1",
-	}, 500*time.Millisecond, &out)
+	}, 500*time.Millisecond, 500*time.Millisecond, &out)
 
-	if len(results) != 5 {
-		t.Fatalf("len(results) = %d, want 5", len(results))
+	if len(results) != 7 {
+		t.Fatalf("len(results) = %d, want 7", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusFail {
@@ -129,7 +132,7 @@ func TestRunAgainstNothing(t *testing.T) {
 		}
 	}
 	report := out.String()
-	if !strings.Contains(report, "5 of 5 tests failed") {
+	if !strings.Contains(report, "7 of 7 tests failed") {
 		t.Errorf("report missing failure conclusion:\n%s", report)
 	}
 }

@@ -16,13 +16,17 @@ import (
 	"net/netip"
 	"strconv"
 
+	"golang.zx2c4.com/wireguard/tun/tuntest"
+
 	"github.com/rthomazel/netdiag/internal/protocol"
 	"github.com/rthomazel/netdiag/internal/wgtest"
+	"github.com/rthomazel/netdiag/internal/wgtun"
 )
 
 // WG owns the two WireGuard diagnostic devices, keyed by test name.
 type WG struct {
-	devs map[string]*wgtest.Device
+	devs map[string]*dev
+	done chan struct{}
 }
 
 // NewWG builds the two passive WireGuard devices that serve tests 4 and 5.
@@ -47,17 +51,24 @@ func NewWG(addr51820, addr443 string) (*WG, error) {
 		dev51820.Close()
 		return nil, fmt.Errorf("wg %s: %w", protocol.TestWG443, err)
 	}
-	return &WG{devs: map[string]*wgtest.Device{
-		protocol.TestWG51820: dev51820,
-		protocol.TestWG443:   dev443,
-	}}, nil
+	w := &WG{
+		devs: map[string]*dev{
+			protocol.TestWG51820: {name: protocol.TestWG51820, dev: dev51820, subnet: protocol.WGSubnet51820},
+			protocol.TestWG443:   {name: protocol.TestWG443, dev: dev443, subnet: protocol.WGSubnet443},
+		},
+		done: make(chan struct{}),
+	}
+	for _, d := range w.devs {
+		go w.echoLoop(d)
+	}
+	return w, nil
 }
 
 // Keys returns the public keys of both devices (hex-encoded), in the shape
 // the /wg handler serves.
 func (w *WG) Keys() protocol.WGKeys {
-	pub51820 := w.devs[protocol.TestWG51820].PublicKey()
-	pub443 := w.devs[protocol.TestWG443].PublicKey()
+	pub51820 := w.devs[protocol.TestWG51820].dev.PublicKey()
+	pub443 := w.devs[protocol.TestWG443].dev.PublicKey()
 	return protocol.WGKeys{
 		WG51820: hex.EncodeToString(pub51820[:]),
 		WG443:   hex.EncodeToString(pub443[:]),
@@ -69,63 +80,84 @@ func (w *WG) Keys() protocol.WGKeys {
 // only. It replaces the previously registered peer, so repeated (or
 // concurrent) client runs each start clean instead of accumulating peers.
 func (w *WG) Register(name string, pub [32]byte) error {
-	dev, subnet, ok := w.forTest(name)
+	d, ok := w.forTest(name)
 	if !ok {
 		return fmt.Errorf("unknown wg test %q", name)
 	}
-	return dev.ReplacePeer(pub, subnet.Client)
+	return d.dev.ReplacePeer(pub, d.subnet.Client)
 }
 
 // Port returns the device's actual UDP listen port (it must be read back,
 // since a 0 request picks an ephemeral one).
 func (w *WG) Port(name string) (int, error) {
-	dev, _, ok := w.forTest(name)
+	d, ok := w.forTest(name)
 	if !ok {
 		return 0, fmt.Errorf("unknown wg test %q", name)
 	}
-	return dev.ListenPort()
+	return d.dev.ListenPort()
 }
 
 // Status snapshots the named test's device: the observed client endpoint
 // (empty until the client's first handshake packet arrives) plus the
 // handshake time and byte counters.
 func (w *WG) Status(name string) (wgtest.Status, error) {
-	dev, _, ok := w.forTest(name)
+	d, ok := w.forTest(name)
 	if !ok {
 		return wgtest.Status{}, fmt.Errorf("unknown wg test %q", name)
 	}
-	return dev.Status()
+	return d.dev.Status()
+}
+
+// echoLoop is the tunnel echo responder (tests 6 and 7): it reads ping
+// packets arriving on the device's fake TUN and writes a reply back into the
+// device's own outbound channel — from the server's tunnel IP to the
+// client's. It responds only to pings it receives; the server stays passive
+// and never initiates tunnel traffic.
+func (w *WG) echoLoop(d *dev) {
+	for {
+		select {
+		case in := <-d.dev.TUN.Inbound:
+			if _, ok := wgtun.PingSrc(in); !ok {
+				continue
+			}
+			// Reply from the server's own tunnel IP to the client's: the
+			// destination is the client's tunnel IP (d.subnet.Client) and the
+			// source is the server's (d.subnet.Server). The client byte-
+			// compares against exactly this, so the source must be the server,
+			// not an echo of the received packet's source.
+			out := d.dev.TUN.Outbound
+			out <- tuntest.Ping(d.subnet.Client, d.subnet.Server)
+		case <-w.done:
+			return
+		}
+	}
 }
 
 // Close shuts both devices down and waits for their routines to finish.
 func (w *WG) Close() {
-	for _, dev := range w.devs {
-		dev.Close()
+	close(w.done)
+	for _, d := range w.devs {
+		d.dev.Close()
 	}
 }
 
 // Known reports whether name is one of the WireGuard test names.
 func (w *WG) Known(name string) bool {
-	_, _, ok := w.forTest(name)
+	_, ok := w.forTest(name)
 	return ok
 }
 
-// forTest resolves a test name to its device and the client's tunnel address.
-func (w *WG) forTest(name string) (*wgtest.Device, protocol.Subnet, bool) {
-	var subnet protocol.Subnet
-	switch name {
-	case protocol.TestWG51820:
-		subnet = protocol.WGSubnet51820
-	case protocol.TestWG443:
-		subnet = protocol.WGSubnet443
-	default:
-		return nil, protocol.Subnet{}, false
-	}
-	dev, ok := w.devs[name]
-	if !ok {
-		return nil, protocol.Subnet{}, false
-	}
-	return dev, subnet, true
+// dev pairs a WireGuard device with its test name and tunnel subnet.
+type dev struct {
+	name   string
+	dev    *wgtest.Device
+	subnet protocol.Subnet
+}
+
+// forTest resolves a test name to its device entry.
+func (w *WG) forTest(name string) (*dev, bool) {
+	d, ok := w.devs[name]
+	return d, ok
 }
 
 // portOfAddr extracts the port from a "host:port" listen address.
