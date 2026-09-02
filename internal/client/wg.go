@@ -32,6 +32,8 @@ import (
 type wgStatus struct {
 	Endpoint         string `json:"endpoint"`
 	LastHandshakeSec uint64 `json:"last_handshake_time_sec"`
+	TxBytes          uint64 `json:"tx_bytes"`
+	RxBytes          uint64 `json:"rx_bytes"`
 }
 
 // wgFetchKeys fetches the server's WireGuard public keys (hex) from the
@@ -74,7 +76,12 @@ func httpsGetJSON(ctx context.Context, url string, timeout time.Duration, out an
 // wgTest runs one WireGuard handshake test against the named server device
 // (protocol.TestWG51820 or protocol.TestWG443). addr is the WireGuard UDP
 // endpoint the client dials; control (register/status) goes over httpsAddr.
-func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subnet protocol.Subnet, timeout time.Duration) protocol.Result {
+//
+// retain controls who closes the device afterwards: when non-nil the caller
+// receives the handshaken device on success (test 6 reuses test 4's
+// established mapping instead of building a third device) and must Close it;
+// when nil the device is closed here.
+func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subnet protocol.Subnet, timeout time.Duration, retain **wgtest.Device) protocol.Result {
 	res := protocol.Result{Name: name}
 	peerPub, err := hex.DecodeString(peerPubHex)
 	if err != nil || len(peerPub) != 32 {
@@ -84,7 +91,16 @@ func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subne
 	if err != nil {
 		return fail(res, err)
 	}
-	defer dev.Close()
+	// The device is closed here on every path except the retained success
+	// case (the caller takes ownership of dev and closes it). A closure that
+	// is armed until the success path hands dev off keeps the failure paths
+	// from leaking the device and its routines.
+	owned := true
+	defer func() {
+		if owned {
+			dev.Close()
+		}
+	}()
 	pub := dev.PublicKey()
 	if err := wgRegister(ctx, httpsAddr, name, hex.EncodeToString(pub[:]), timeout); err != nil {
 		return fail(res, fmt.Errorf("register: %w", err))
@@ -108,6 +124,10 @@ func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subne
 	}
 	if st.Endpoint == "" {
 		return fail(res, fmt.Errorf("server confirmed the handshake but observed no client source"))
+	}
+	if retain != nil {
+		*retain = dev
+		owned = false // caller now owns the device
 	}
 	res.Status = protocol.StatusPass
 	res.Src = st.Endpoint
@@ -142,6 +162,15 @@ func wgRegister(ctx context.Context, httpsAddr, name, pubHex string, timeout tim
 		return fmt.Errorf("register status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// wgFullStatus takes a single snapshot of the server's view of the named
+// device. Test 6 compares two of these across the idle window; no polling,
+// no confirmation — it just reads what the server has right now.
+func wgFullStatus(ctx context.Context, httpsAddr, name string) (wgStatus, error) {
+	var st wgStatus
+	err := httpsGetJSON(ctx, "https://"+httpsAddr+"/wg/status/"+name, 5*time.Second, &st)
+	return st, err
 }
 
 // wgFetchStatus polls the server's view of the named device until it shows a

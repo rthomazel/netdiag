@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"time"
 )
 
 // Magic bytes identify the two directions of the UDP-ACK exchange.
@@ -32,6 +33,13 @@ const (
 	StatusPass = "pass"
 	StatusFail = "fail"
 )
+
+// DefaultPersistentWindow is how long test 6 idles the established tunnel
+// before resending traffic: the deliberate length of the diagnostic (a 60s
+// window must survive to hold a NAT mapping), set at the default-60s
+// production value. Local runs and tests pass a shorter window through the
+// client's persistentWindow parameter.
+const DefaultPersistentWindow = 60 * time.Second
 
 // Test names. The client requests these by name; the server records a Result for
 // each and the client fetches them back. Keeping the names in one place means the

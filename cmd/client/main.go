@@ -10,15 +10,18 @@ import (
 	"time"
 
 	"github.com/rthomazel/netdiag/internal/client"
+	"github.com/rthomazel/netdiag/internal/protocol"
 )
 
 func main() {
 	server := flag.String("server", "", "VPS host or IP (required)")
 	timeout := flag.Duration("timeout", 5*time.Second, "per-test timeout")
+	idle := flag.Duration("idle", protocol.DefaultPersistentWindow,
+		"test 6 idle window (the persistent-NAT diagnostic; 60s is the deliberate default)")
 	flag.Parse()
 
 	if *server == "" {
-		fmt.Fprintln(os.Stderr, "usage: netdiag-client -server <vps-ip> [-timeout 5s]")
+		fmt.Fprintln(os.Stderr, "usage: netdiag-client -server <vps-ip> [-timeout 5s] [-idle 1m]")
 		os.Exit(2)
 	}
 
@@ -31,7 +34,7 @@ func main() {
 		UDP:     *server + ":60000",
 		WG51820: *server + ":51820",
 		WG443:   *server + ":443",
-	}, *timeout, os.Stdout)
+	}, *timeout, *idle, os.Stdout)
 
 	if client.AnyFailed(results) {
 		os.Exit(1)

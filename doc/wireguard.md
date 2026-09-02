@@ -165,19 +165,35 @@ no handshake completion. The pass condition is therefore
 status is the source of truth for pass/fail — the client finishing its local
 poll is the weak signal, the server confirming is the strong one.
 
-### 7. Fake-TUN mechanics (basis for test 7)
+### 7. Fake-TUN mechanics (basis for tests 6 and 7)
 
 - `ChannelTUN` routes by packet **destination**: to ping X → Y, inject a
   packet addressed to Y into `X.TUN.Outbound` and read it on `Y.TUN.Inbound`.
 - A 32-byte ping is 16-byte aligned → no MTU padding; the delivered TUN
   payload is byte-identical to what was injected (encryption overhead lives
-  on the UDP wire, not in the TUN payload).
+  on the UDP wire, not in the TUN payload). The client byte-compares the
+  delivered echo reply against `tuntest.Ping(clientIP, serverIP)` — so the
+  server's echo must send *from* its own tunnel IP, not echo back the
+  received packet's source (src==dst breaks the byte match and the device
+  drops it).
 - Keepalives advance `tx_bytes` (client) / `rx_bytes` (server) while
   `last_handshake_time_sec` stays stable — the measurement basis for test 6:
   bytes moving with the handshake time frozen means keepalives are still
-  getting through.
+  getting through. The server's `rx_bytes` are the client's sent bytes, so
+  the client proves its keepalives fired by asserting *its own* `tx_bytes`
+  advanced across the idle, independent of the server counters.
 
-### 8. Versions and the Windows build
+### 8. The echo responder stays passive
+
+Test 7's server echo reads pings from `TUN.Inbound` and writes a reply into
+`TUN.Outbound`. It never initiates: a keepalive or ping with no keypair is
+what triggers a handshake (Learning 1), and the server only holds a keypair
+after the client handshakes first. Echoing a *received* ping is safe — the
+keypair already exists — so the server stays passive and the one-side-initiates
+invariant (Learning 2) holds. The responder only answers echo pings
+(`PingSrc` filters on ICMP type 8); anything else on `TUN.Inbound` is ignored.
+
+### 9. Versions and the Windows build
 
 - Pinned `golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446`
   (userspace implementation). The wintun TUN driver is *not* used —
@@ -201,10 +217,16 @@ poll is the weak signal, the server confirming is the strong one.
 - **One deadline per test** — handshake wait + server confirmation share a
   single timeout, so a slow network cannot stack two full timeouts.
 
-## Open (next PRs)
+## Done
 
-- **Test 6 — NAT mapping aging**: 60s idle with the 1s keepalive
-  (PersistentKeepalive), then resend; compare observed endpoint + tx/rx
-  bytes to see whether the client's NAT aged the mapping out from under us.
-- **Test 7 — bidirectional tunnel traffic**: pings through the ChannelTUN in
-  both directions; the server needs an echo responder on `TUN.Inbound`.
+All 7 tests are implemented and pass in the loopback integration test.
+
+- **Test 6 — NAT mapping aging**: 60s idle (`-idle`, default 60s) with the 1s
+  keepalive armed, then resend. Passes iff the observed endpoint is unchanged
+  and keepalives still flowed (server `rx_bytes` and client `tx_bytes` both
+  advanced), then a fresh ping delivers through the tunnel. A re-key inside
+  the window is not a failure — it bumps the handshake time without breaking
+  the mapping.
+- **Test 7 — bidirectional tunnel traffic**: N pings client→server, each
+  answered by the server's echo responder (server→client), byte-comparing
+  every delivery so each round trip carries real data in both directions.

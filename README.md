@@ -57,11 +57,16 @@ the production condition test 5 exists to probe.
 go run ./cmd/client -server <vps-ip>
 ```
 
-Runs tests 1-5 in order and prints one line per test as it completes, including
+Runs tests 1-7 in order and prints one line per test as it completes, including
 the source address the server observed and the round trip. Exit code is 1 if
-any test failed, 0 otherwise. For tests 4 and 5 the client also speaks to the
+any test failed, 0 otherwise. For tests 4-7 the client also speaks to the
 server over the HTTPS control plane to exchange WireGuard keys, so those tests
 need the HTTPS port reachable as well as the WireGuard UDP port.
+
+`-timeout` is the per-test deadline (default 5s). `-idle` is test 6's idle
+window — the length of the persistent-NAT diagnostic, defaulted to 60s. Test 6
+is deliberately slow because the idle window is the thing being measured; pass
+a shorter `-idle` for a quick local run.
 
 ```text
 Client Network Connectivity Test
@@ -70,12 +75,18 @@ Client Network Connectivity Test
 [PASS] UDP/60000        src=203.0.113.7:56769    rtt=88ms
 [PASS] WireGuard UDP/51820 src=203.0.113.7:52101  rtt=91ms  handshake 91ms
 [PASS] WireGuard UDP/443   src=203.0.113.7:49882  rtt=89ms  handshake 89ms
+[PASS] WireGuard persistent  src=203.0.113.7:52101  rtt=1m0s  kept alive 1m0s (rx 120 -> 121 bytes)
+[PASS] WireGuard bidir   src=203.0.113.7:52101  rtt=2ms  5 pings each direction
 
 Conclusion:
-WireGuard handshake works on both standard and non-standard ports. Direct WireGuard connectivity appears viable (tests 1-5).
+WireGuard works end to end: handshake on both standard and non-standard ports, NAT mapping holds across the idle window, and traffic flows in both directions (tests 1-7). Direct WireGuard connectivity appears viable.
 ```
 
 ## Status
 
-Tests 1-5 done end to end. Remaining: test 6 (persistent UDP / NAT mapping
-aging) and test 7 (bidirectional traffic through the tunnel).
+All 7 tests done end to end. Tests 1-5 verify the baseline protocols and the
+WireGuard handshake on standard and non-standard ports. Test 6 (persistent)
+verifies the NAT mapping survives the 60s idle by asserting keepalives still
+flow and the observed endpoint is unchanged, then resends traffic through the
+tunnel. Test 7 (bidir) pushes pings through the tunnel in both directions,
+each answered by the server's echo responder.
