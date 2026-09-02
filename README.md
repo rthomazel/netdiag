@@ -10,6 +10,9 @@ what a network permits before we build a WireGuard VPN on top of it.
 
 Plan: rthomazel/interface `doc/ideas/inbox/netdiag.md` (idea [31]).
 
+The WireGuard tests (4-5) and their non-obvious behaviors are documented in
+[`doc/wireguard.md`](doc/wireguard.md).
+
 ## Test suite (in order)
 
 1. HTTPS/TCP 443 — baseline: normal outbound works
