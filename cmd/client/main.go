@@ -26,9 +26,11 @@ func main() {
 	defer stop()
 
 	results := client.Run(ctx, client.Target{
-		HTTPS: *server + ":443",
-		TCP:   *server + ":8443",
-		UDP:   *server + ":60000",
+		HTTPS:   *server + ":443",
+		TCP:     *server + ":8443",
+		UDP:     *server + ":60000",
+		WG51820: *server + ":51820",
+		WG443:   *server + ":443",
 	}, *timeout, os.Stdout)
 
 	if client.AnyFailed(results) {

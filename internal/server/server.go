@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rthomazel/netdiag/internal/protocol"
@@ -33,11 +35,13 @@ import (
 // giving up on that connection or datagram.
 const readTimeout = 5 * time.Second
 
-// Config holds the listen addresses for the three test listeners.
+// Config holds the listen addresses for the test listeners.
 type Config struct {
-	HTTPS string
-	TCP   string
-	UDP   string
+	HTTPS   string
+	TCP     string
+	UDP     string
+	WG51820 string // UDP address for the WireGuard test 4 listener
+	WG443   string // UDP address for the WireGuard test 5 listener
 }
 
 // Server holds the pre-bound listeners that Serve runs.
@@ -45,6 +49,7 @@ type Server struct {
 	HTTPS net.Listener
 	TCP   net.Listener
 	UDP   *net.UDPConn
+	WG    *WG
 }
 
 // Run binds the listeners from cfg and serves them until ctx is canceled.
@@ -76,19 +81,30 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("udp %s: %w", cfg.UDP, err)
 	}
 
-	return Serve(ctx, Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpConn})
+	wg, err := NewWG(cfg.WG51820, cfg.WG443)
+	if err != nil {
+		tlsLn.Close()
+		tcpLn.Close()
+		udpConn.Close()
+		return err
+	}
+
+	return Serve(ctx, Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpConn, WG: wg})
 }
 
-// Serve runs the three listeners until ctx is canceled, then closes them.
-// It takes pre-bound listeners so tests can run the harness on ephemeral ports.
+// Serve runs the listeners until ctx is canceled, then closes them. It takes
+// pre-bound listeners so tests can run the harness on ephemeral ports.
 func Serve(ctx context.Context, s Server) error {
 	go func() {
 		<-ctx.Done()
 		s.HTTPS.Close()
 		s.TCP.Close()
 		s.UDP.Close()
+		if s.WG != nil {
+			s.WG.Close()
+		}
 	}()
-	go serveHTTPS(ctx, s.HTTPS)
+	go serveHTTPS(ctx, s.HTTPS, s.WG)
 	go acceptTCP(ctx, s.TCP)
 	go readUDP(ctx, s.UDP)
 
@@ -98,9 +114,9 @@ func Serve(ctx context.Context, s Server) error {
 
 // serveHTTPS is the listener for test https443. Any request is answered with
 // a JSON Result carrying the source address it observed.
-func serveHTTPS(ctx context.Context, ln net.Listener) {
+func serveHTTPS(ctx context.Context, ln net.Listener, wg *WG) {
 	log.Printf("listening for test %s on %s (self-signed TLS)", protocol.TestHTTPS443, ln.Addr())
-	srv := &http.Server{Handler: httpsHandler()}
+	srv := &http.Server{Handler: httpsHandler(wg)}
 	// Closing the listener at shutdown makes Serve return a non-nil, non-ErrServerClosed
 	// error; the ctx check keeps that out of the log.
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed && ctx.Err() == nil {
@@ -108,7 +124,11 @@ func serveHTTPS(ctx context.Context, ln net.Listener) {
 	}
 }
 
-func httpsHandler() http.Handler {
+// httpsHandler is the listener for test https443. Any request is answered
+// with a JSON Result carrying the source address it observed. The /wg routes
+// are the WireGuard control plane: key distribution, client registration, and
+// status readback for tests 4 and 5.
+func httpsHandler(wg *WG) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("%s from %s", protocol.TestHTTPS443, r.RemoteAddr)
@@ -116,7 +136,60 @@ func httpsHandler() http.Handler {
 		res := protocol.Result{Name: protocol.TestHTTPS443, Status: protocol.StatusPass, Src: r.RemoteAddr}
 		_ = json.NewEncoder(w).Encode(res)
 	})
+	if wg != nil {
+		mux.HandleFunc("/wg", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(wg.Keys())
+		})
+		mux.HandleFunc("/wg/register", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req wgRegisterReq
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+				http.Error(w, "bad request body", http.StatusBadRequest)
+				return
+			}
+			pub, err := hex.DecodeString(req.PublicKey)
+			if err != nil || len(pub) != 32 {
+				http.Error(w, "public_key must be 32 hex-encoded bytes", http.StatusBadRequest)
+				return
+			}
+			if !wg.Known(req.Test) {
+				http.Error(w, "unknown test", http.StatusBadRequest)
+				return
+			}
+			if err := wg.Register(req.Test, [32]byte(pub)); err != nil {
+				log.Printf("wg register: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("/wg/status/", func(w http.ResponseWriter, r *http.Request) {
+			name := strings.TrimPrefix(r.URL.Path, "/wg/status/")
+			st, err := wg.Status(name)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(st)
+		})
+	}
 	return mux
+}
+
+// wgRegisterReq is the client registration body: which WG test the client
+// will talk to, and the device public key it generated for it.
+type wgRegisterReq struct {
+	Test      string `json:"test"`
+	PublicKey string `json:"public_key"`
 }
 
 // acceptTCP is the listener for test tcp8443. It speaks the same ACK

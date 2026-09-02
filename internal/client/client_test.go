@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,8 @@ import (
 )
 
 // startServer runs the real server package on ephemeral loopback ports and
-// returns the client targets that point at it.
+// returns the client targets that point at it, including the two WireGuard
+// devices on their actual (read-back) ports.
 func startServer(t *testing.T) client.Target {
 	t.Helper()
 
@@ -35,25 +37,47 @@ func startServer(t *testing.T) client.Target {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wg, err := server.NewWG("127.0.0.1:0", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("wg: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = server.Serve(ctx, server.Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpLn})
+		_ = server.Serve(ctx, server.Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpLn, WG: wg})
 	}()
 	t.Cleanup(func() {
 		cancel()
 		<-done
 	})
 
-	return client.Target{HTTPS: tlsLn.Addr().String(), TCP: tcpLn.Addr().String(), UDP: udpLn.LocalAddr().String()}
+	p51820, err := wg.Port(protocol.TestWG51820)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p443, err := wg.Port(protocol.TestWG443)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return client.Target{
+		HTTPS:   tlsLn.Addr().String(),
+		TCP:     tcpLn.Addr().String(),
+		UDP:     udpLn.LocalAddr().String(),
+		WG51820: "127.0.0.1:" + strconv.Itoa(p51820),
+		WG443:   "127.0.0.1:" + strconv.Itoa(p443),
+	}
 }
 
 func TestRunAgainstRealServer(t *testing.T) {
 	var out bytes.Buffer
-	results := client.Run(context.Background(), startServer(t), time.Second, &out)
+	results := client.Run(context.Background(), startServer(t), 5*time.Second, &out)
 
+	if len(results) != 5 {
+		t.Fatalf("len(results) = %d, want 5", len(results))
+	}
 	for _, res := range results {
 		if res.Status != protocol.StatusPass {
 			t.Errorf("test %s = %s: %s", res.Name, res.Status, res.Detail)
@@ -71,6 +95,7 @@ func TestRunAgainstRealServer(t *testing.T) {
 		"[PASS] HTTPS TCP/",
 		"[PASS] TCP/",
 		"[PASS] UDP/",
+		"[PASS] WireGuard UDP/",
 		"src=127.0.0.1:",
 		"rtt=",
 		"Conclusion:",
@@ -84,13 +109,16 @@ func TestRunAgainstRealServer(t *testing.T) {
 func TestRunAgainstNothing(t *testing.T) {
 	// Nothing listens on these ports: every test must fail cleanly and the
 	// report must still render (detail set, conclusion counts the failures).
+	// The WireGuard tests fail as untestable: with no HTTPS control plane
+	// there are no server keys to fetch.
 	var out bytes.Buffer
 	results := client.Run(context.Background(), client.Target{
 		HTTPS: "127.0.0.1:1", TCP: "127.0.0.1:1", UDP: "127.0.0.1:1",
+		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1",
 	}, 500*time.Millisecond, &out)
 
-	if len(results) != 3 {
-		t.Fatalf("len(results) = %d, want 3", len(results))
+	if len(results) != 5 {
+		t.Fatalf("len(results) = %d, want 5", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusFail {
@@ -101,7 +129,7 @@ func TestRunAgainstNothing(t *testing.T) {
 		}
 	}
 	report := out.String()
-	if !strings.Contains(report, "3 of 3 tests failed") {
+	if !strings.Contains(report, "5 of 5 tests failed") {
 		t.Errorf("report missing failure conclusion:\n%s", report)
 	}
 }

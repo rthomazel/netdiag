@@ -12,6 +12,7 @@ package protocol
 import (
 	"encoding/binary"
 	"net"
+	"net/netip"
 )
 
 // Magic bytes identify the two directions of the UDP-ACK exchange.
@@ -43,6 +44,28 @@ const (
 	TestWG443      = "wg443"
 	TestPersistent = "persistent"
 	TestBidir      = "bidir"
+)
+
+// WGKeys carries the server's WireGuard public keys (hex-encoded) for the
+// two handshake tests, fetched over the HTTPS control plane so the client
+// needs no pre-shared keys.
+type WGKeys struct {
+	WG51820 string `json:"wg51820"`
+	WG443   string `json:"wg443"`
+}
+
+// Subnet is the tunnel address pair for one WireGuard test: the server's
+// address and the client's. Each test gets its own private pair so the
+// fake tunnels stay isolated and only carry diagnostic traffic.
+type Subnet struct {
+	Server netip.Addr
+	Client netip.Addr
+}
+
+// Tunnel subnets for the WireGuard tests.
+var (
+	WGSubnet51820 = Subnet{Server: netip.MustParseAddr("10.66.0.1"), Client: netip.MustParseAddr("10.66.0.2")}
+	WGSubnet443   = Subnet{Server: netip.MustParseAddr("10.67.0.1"), Client: netip.MustParseAddr("10.67.0.2")}
 )
 
 // Result is the per-test outcome the server records and returns to the client.
