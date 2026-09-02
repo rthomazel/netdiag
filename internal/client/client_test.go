@@ -136,3 +136,39 @@ func TestRunAgainstNothing(t *testing.T) {
 		t.Errorf("report missing failure conclusion:\n%s", report)
 	}
 }
+
+// TestWG51820FailsMarksSixSevenUntestable runs the full suite against a live
+// server but points the 51820 WireGuard endpoint at a dead port, so test 4's
+// handshake can never complete. Tests 6 and 7 ride on test 4's device, so
+// they must be reported untestable (not failed on their own terms), matching
+// the key-fetch-failure pattern in Run.
+func TestWG51820FailsMarksSixSevenUntestable(t *testing.T) {
+	tgt := startServer(t)
+	tgt.WG51820 = "127.0.0.1:1" // nothing listens here: test 4 can't complete
+
+	var out bytes.Buffer
+	results := client.Run(context.Background(), tgt, time.Second, 500*time.Millisecond, &out)
+
+	if len(results) != 7 {
+		t.Fatalf("len(results) = %d, want 7", len(results))
+	}
+	byName := map[string]protocol.Result{}
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+	if r := byName[protocol.TestWG51820]; r.Status != protocol.StatusFail {
+		t.Errorf("wg51820 = %s, want fail (dead port)", r.Status)
+	}
+	for _, name := range []string{protocol.TestPersistent, protocol.TestBidir} {
+		r := byName[name]
+		if r.Status != protocol.StatusFail {
+			t.Errorf("%s = %s, want fail (untestable)", name, r.Status)
+		}
+		if !strings.Contains(r.Detail, "untestable") {
+			t.Errorf("%s detail = %q, want untestable", name, r.Detail)
+		}
+	}
+	if r := byName[protocol.TestWG443]; r.Status != protocol.StatusPass {
+		t.Errorf("wg443 = %s, want pass (endpoint still live)", r.Status)
+	}
+}

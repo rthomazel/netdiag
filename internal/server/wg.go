@@ -124,9 +124,16 @@ func (w *WG) echoLoop(d *dev) {
 			// destination is the client's tunnel IP (d.subnet.Client) and the
 			// source is the server's (d.subnet.Server). The client byte-
 			// compares against exactly this, so the source must be the server,
-			// not an echo of the received packet's source.
+			// not an echo of the received packet's source. The send is selected
+			// against w.done so a shutdown cannot leave this loop blocked on an
+			// Outbound send whose consumer (the device's TUN read loop) has
+			// already stopped.
 			out := d.dev.TUN.Outbound
-			out <- tuntest.Ping(d.subnet.Client, d.subnet.Server)
+			select {
+			case out <- tuntest.Ping(d.subnet.Client, d.subnet.Server):
+			case <-w.done:
+				return
+			}
 		case <-w.done:
 			return
 		}

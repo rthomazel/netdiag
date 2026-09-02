@@ -1,5 +1,6 @@
-// Package wgtun holds the fake-TUN ping primitive the in-memory WireGuard
-// tests use to push data through an established tunnel.
+// Package wgtun parses the fake-TUN ping packets the in-memory WireGuard
+// tests exchange, so the server's echo responder can tell an echo ping from
+// anything else on the tunnel.
 package wgtun
 
 import (

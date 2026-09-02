@@ -131,15 +131,20 @@ func waitIdle(ctx context.Context, d time.Duration) error {
 // carries real data in both directions. The first failure is reported.
 func bidirTest(ctx context.Context, dev *wgtest.Device, httpsAddr string, subnet protocol.Subnet, timeout time.Duration) protocol.Result {
 	res := protocol.Result{Name: protocol.TestBidir}
+	// One deadline for the whole test: a blackholed tunnel (the failure this
+	// test exists to catch) would otherwise hang the tool on a TUN read with no
+	// reply, since the Run context carries no deadline of its own.
+	bCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	start := time.Now()
 	for i := 0; i < pingCount; i++ {
-		if err := echoPing(ctx, dev, subnet); err != nil {
+		if err := echoPing(bCtx, dev, subnet); err != nil {
 			return fail(res, fmt.Errorf("ping %d/%d: %w", i+1, pingCount, err))
 		}
 	}
 	// Report the server-observed endpoint, the pass condition for the other
 	// WG tests: the bytes moved across the wire the server saw.
-	st, err := wgFullStatus(ctx, httpsAddr, protocol.TestWG51820)
+	st, err := wgFullStatus(bCtx, httpsAddr, protocol.TestWG51820)
 	if err != nil {
 		return fail(res, fmt.Errorf("server status: %w", err))
 	}
