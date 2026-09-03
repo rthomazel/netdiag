@@ -1,0 +1,22 @@
+# Standalone compose for the netdiag server on the LGA VPS (Hetzner).
+#
+# Run from the netdiag repo checkout on the VPS:
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Host networking is required: the server must bind the VPS public IP directly
+# and observe real client source IPs (not the Docker bridge NAT), because the
+# observed source IP:port IS the diagnostic report.
+# No `ports:` block - host networking binds the five listeners directly at
+# their NETDIAG_* defaults (443/tcp, 443/udp, 8443/tcp, 60000/udp, 51820/udp).
+name: netdiag
+
+services:
+  netdiag-server:
+    build:
+      context: ..
+      dockerfile: deploy/netdiag.Dockerfile
+      args:
+        # The LGA VPS network blocks proxy.golang.org; goproxy.cn works there.
+        GOPROXY: https://goproxy.cn,direct
+    network_mode: host
+    restart: always
