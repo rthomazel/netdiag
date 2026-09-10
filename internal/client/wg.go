@@ -81,7 +81,7 @@ func httpsGetJSON(ctx context.Context, url string, timeout time.Duration, out an
 // receives the handshaken device on success (test 6 reuses test 4's
 // established mapping instead of building a third device) and must Close it;
 // when nil the device is closed here.
-func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subnet protocol.Subnet, timeout time.Duration, retain **wgtest.Device) protocol.Result {
+func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subnet protocol.Subnet, timeout, reqTimeout time.Duration, retain **wgtest.Device) protocol.Result {
 	res := protocol.Result{Name: name}
 	peerPub, err := hex.DecodeString(peerPubHex)
 	if err != nil || len(peerPub) != 32 {
@@ -118,7 +118,7 @@ func wgTest(ctx context.Context, name, addr, httpsAddr, peerPubHex string, subne
 	if err != nil {
 		return fail(res, fmt.Errorf("handshake: %w", err))
 	}
-	st, err := wgFetchStatus(rsCtx, httpsAddr, name)
+	st, err := wgFetchStatus(rsCtx, httpsAddr, name, reqTimeout)
 	if err != nil {
 		return fail(res, fmt.Errorf("server status: %w", err))
 	}
@@ -179,8 +179,7 @@ func wgFullStatus(ctx context.Context, httpsAddr, name string) (wgStatus, error)
 // the handshake completes, so an endpoint alone is not proof the exchange
 // finished. ctx bounds the whole poll; each request gets a short timeout so
 // one slow status read cannot eat the remaining budget.
-func wgFetchStatus(ctx context.Context, httpsAddr, name string) (wgStatus, error) {
-	const reqTimeout = 2 * time.Second
+func wgFetchStatus(ctx context.Context, httpsAddr, name string, reqTimeout time.Duration) (wgStatus, error) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var st wgStatus

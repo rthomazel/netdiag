@@ -73,7 +73,7 @@ func startServer(t *testing.T) client.Target {
 
 func TestRunAgainstRealServer(t *testing.T) {
 	var out bytes.Buffer
-	results := client.Run(context.Background(), startServer(t), 5*time.Second, 2*time.Second, &out)
+	results := client.Run(context.Background(), startServer(t), 5*time.Second, 2*time.Second, 5*time.Second, &out)
 
 	if len(results) != 7 {
 		t.Fatalf("len(results) = %d, want 7", len(results))
@@ -118,7 +118,7 @@ func TestRunAgainstNothing(t *testing.T) {
 	results := client.Run(context.Background(), client.Target{
 		HTTPS: "127.0.0.1:1", TCP: "127.0.0.1:1", UDP: "127.0.0.1:1",
 		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1",
-	}, 500*time.Millisecond, 500*time.Millisecond, &out)
+	}, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, &out)
 
 	if len(results) != 7 {
 		t.Fatalf("len(results) = %d, want 7", len(results))
@@ -147,7 +147,7 @@ func TestWG51820FailsMarksSixSevenUntestable(t *testing.T) {
 	tgt.WG51820 = "127.0.0.1:1" // nothing listens here: test 4 can't complete
 
 	var out bytes.Buffer
-	results := client.Run(context.Background(), tgt, time.Second, 500*time.Millisecond, &out)
+	results := client.Run(context.Background(), tgt, time.Second, 500*time.Millisecond, time.Second, &out)
 
 	if len(results) != 7 {
 		t.Fatalf("len(results) = %d, want 7", len(results))
