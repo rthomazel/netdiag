@@ -39,7 +39,7 @@ type Target struct {
 // a longer budget — the idle window itself is the diagnostic — so its
 // deadline is persistentWindow + timeout, independent of the per-test value,
 // so a small -timeout never caps the 60s idle.
-func Run(ctx context.Context, t Target, timeout time.Duration, persistentWindow time.Duration, w io.Writer) []protocol.Result {
+func Run(ctx context.Context, t Target, timeout, persistentWindow, reqTimeout time.Duration, w io.Writer) []protocol.Result {
 	fmt.Fprintln(w, "Client Network Connectivity Test")
 	results := make([]protocol.Result, 0, 7)
 	tests := []func(ctx context.Context) protocol.Result{
@@ -84,7 +84,7 @@ func Run(ctx context.Context, t Target, timeout time.Duration, persistentWindow 
 				if tt.name == protocol.TestWG51820 {
 					retain = &dev51820
 				}
-				res := wgTest(ctx, tt.name, tt.addr, t.HTTPS, tt.pubHex, tt.subnet, timeout, retain)
+				res := wgTest(ctx, tt.name, tt.addr, t.HTTPS, tt.pubHex, tt.subnet, timeout, reqTimeout, retain)
 				results = append(results, res)
 				printLine(w, res, label(res, t))
 			}

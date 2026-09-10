@@ -18,6 +18,7 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "per-test timeout")
 	idle := flag.Duration("idle", protocol.DefaultPersistentWindow,
 		"test 6 idle window (the persistent-NAT diagnostic; 60s is the deliberate default)")
+	reqTimeout := flag.Duration("reqtimeout", 10*time.Second, "timeout per HTTPS control-plane request (key fetch, register, status poll)")
 	flag.Parse()
 
 	if *server == "" {
@@ -34,7 +35,7 @@ func main() {
 		UDP:     *server + ":60000",
 		WG51820: *server + ":51820",
 		WG443:   *server + ":443",
-	}, *timeout, *idle, os.Stdout)
+	}, *timeout, *idle, *reqTimeout, os.Stdout)
 
 	if client.AnyFailed(results) {
 		os.Exit(1)
