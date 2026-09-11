@@ -21,8 +21,10 @@ func main() {
 	reqTimeout := flag.Duration("reqtimeout", 10*time.Second, "timeout per HTTPS control-plane request (key fetch, register, status poll)")
 	flag.Parse()
 
+	fmt.Fprintf(os.Stderr, "timeout %v, idle %v, reqTimeout %v\n", *timeout, *idle, *reqTimeout)
+
 	if *server == "" {
-		fmt.Fprintln(os.Stderr, "usage: netdiag-client -server <vps-ip> [-timeout 5s] [-idle 1m]")
+		fmt.Fprintln(os.Stderr, "usage: netdiag-client -server <vps-ip> [-timeout 5s] [-idle 1m] [-reqtimeout 10s]")
 		os.Exit(2)
 	}
 
