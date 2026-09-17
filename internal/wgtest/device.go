@@ -91,7 +91,7 @@ func newDevice(ip netip.Addr, listenPort int, peerPub [32]byte, peerIP netip.Add
 	chTun := tuntest.NewChannelTUN()
 	d := &Device{
 		Device: device.NewDevice(chTun.TUN(), conn.NewStdNetBind(),
-			device.NewLogger(device.LogLevelSilent, "")),
+			device.NewLogger(device.LogLevelVerbose, "")),
 		TUN: chTun,
 		IP:  ip,
 		pk:  sk,

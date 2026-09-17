@@ -29,16 +29,20 @@ type WG struct {
 	done chan struct{}
 }
 
-// NewWG builds the two passive WireGuard devices that serve tests 4 and 5.
-// Each listens on the port parsed from the given address (0 picks an
+// NewWG builds the three passive WireGuard devices that serve tests 4, 5,
+// and 6. Each listens on the port parsed from the given address (0 picks an
 // ephemeral port, for local runs); the client keys are unknown at this
 // point - clients register with Register.
-func NewWG(addr51820, addr443 string) (*WG, error) {
+func NewWG(addr51820, addr443, addrArbitrary string) (*WG, error) {
 	p51820, err := portOfAddr(addr51820)
 	if err != nil {
 		return nil, err
 	}
 	p443, err := portOfAddr(addr443)
+	if err != nil {
+		return nil, err
+	}
+	pArb, err := portOfAddr(addrArbitrary)
 	if err != nil {
 		return nil, err
 	}
@@ -51,10 +55,17 @@ func NewWG(addr51820, addr443 string) (*WG, error) {
 		dev51820.Close()
 		return nil, fmt.Errorf("wg %s: %w", protocol.TestWG443, err)
 	}
+	devArb, err := wgtest.New(protocol.WGSubnetArbitrary.Server, pArb, [32]byte{}, netip.Addr{})
+	if err != nil {
+		dev51820.Close()
+		dev443.Close()
+		return nil, fmt.Errorf("wg %s: %w", protocol.TestWGAbitrary, err)
+	}
 	w := &WG{
 		devs: map[string]*dev{
 			protocol.TestWG51820: {name: protocol.TestWG51820, dev: dev51820, subnet: protocol.WGSubnet51820},
 			protocol.TestWG443:   {name: protocol.TestWG443, dev: dev443, subnet: protocol.WGSubnet443},
+			protocol.TestWGAbitrary: {name: protocol.TestWGAbitrary, dev: devArb, subnet: protocol.WGSubnetArbitrary},
 		},
 		done: make(chan struct{}),
 	}
@@ -64,14 +75,16 @@ func NewWG(addr51820, addr443 string) (*WG, error) {
 	return w, nil
 }
 
-// Keys returns the public keys of both devices (hex-encoded), in the shape
-// the /wg handler serves.
+// Keys returns the public keys of all three devices (hex-encoded), in the
+// shape the /wg handler serves.
 func (w *WG) Keys() protocol.WGKeys {
 	pub51820 := w.devs[protocol.TestWG51820].dev.PublicKey()
 	pub443 := w.devs[protocol.TestWG443].dev.PublicKey()
+	pubArb := w.devs[protocol.TestWGAbitrary].dev.PublicKey()
 	return protocol.WGKeys{
-		WG51820: hex.EncodeToString(pub51820[:]),
-		WG443:   hex.EncodeToString(pub443[:]),
+		WG51820:    hex.EncodeToString(pub51820[:]),
+		WG443:      hex.EncodeToString(pub443[:]),
+		WGAbitrary: hex.EncodeToString(pubArb[:]),
 	}
 }
 

@@ -40,8 +40,9 @@ type Config struct {
 	HTTPS   string
 	TCP     string
 	UDP     string
-	WG51820 string // UDP address for the WireGuard test 4 listener
-	WG443   string // UDP address for the WireGuard test 5 listener
+	WG51820  string // UDP address for the WireGuard test 4 listener
+	WG443    string // UDP address for the WireGuard test 5 listener
+	WGAbitrary string // UDP address for the WireGuard test 6 listener (arbitrary port)
 }
 
 // Server holds the pre-bound listeners that Serve runs.
@@ -81,7 +82,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("udp %s: %w", cfg.UDP, err)
 	}
 
-	wg, err := NewWG(cfg.WG51820, cfg.WG443)
+	wg, err := NewWG(cfg.WG51820, cfg.WG443, cfg.WGAbitrary)
 	if err != nil {
 		tlsLn.Close()
 		tcpLn.Close()

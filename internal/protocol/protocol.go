@@ -50,6 +50,7 @@ const (
 	TestUDP        = "udp"
 	TestWG51820    = "wg51820"
 	TestWG443      = "wg443"
+	TestWGAbitrary = "wgarbitrary"
 	TestPersistent = "persistent"
 	TestBidir      = "bidir"
 )
@@ -58,8 +59,9 @@ const (
 // two handshake tests, fetched over the HTTPS control plane so the client
 // needs no pre-shared keys.
 type WGKeys struct {
-	WG51820 string `json:"wg51820"`
-	WG443   string `json:"wg443"`
+	WG51820    string `json:"wg51820"`
+	WG443      string `json:"wg443"`
+	WGAbitrary string `json:"wgarbitrary"` // WireGuard handshake on an arbitrary (non-standard) UDP port
 }
 
 // Subnet is the tunnel address pair for one WireGuard test: the server's
@@ -74,6 +76,10 @@ type Subnet struct {
 var (
 	WGSubnet51820 = Subnet{Server: netip.MustParseAddr("10.66.0.1"), Client: netip.MustParseAddr("10.66.0.2")}
 	WGSubnet443   = Subnet{Server: netip.MustParseAddr("10.67.0.1"), Client: netip.MustParseAddr("10.67.0.2")}
+	// WGSubnetArbitrary is the tunnel pair for the arbitrary-port handshake
+	// test. A third, independent subnet keeps the three devices isolated so a
+	// handshake on one port never leaks onto another.
+	WGSubnetArbitrary = Subnet{Server: netip.MustParseAddr("10.68.0.1"), Client: netip.MustParseAddr("10.68.0.2")}
 )
 
 // Result is the per-test outcome the server records and returns to the client.

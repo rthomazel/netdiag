@@ -37,7 +37,7 @@ func startServer(t *testing.T) client.Target {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wg, err := server.NewWG("127.0.0.1:0", "127.0.0.1:0")
+	wg, err := server.NewWG("127.0.0.1:0", "127.0.0.1:0", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("wg: %v", err)
 	}
@@ -61,13 +61,18 @@ func startServer(t *testing.T) client.Target {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pArb, err := wg.Port(protocol.TestWGAbitrary)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	return client.Target{
-		HTTPS:   tlsLn.Addr().String(),
-		TCP:     tcpLn.Addr().String(),
-		UDP:     udpLn.LocalAddr().String(),
-		WG51820: "127.0.0.1:" + strconv.Itoa(p51820),
-		WG443:   "127.0.0.1:" + strconv.Itoa(p443),
+		HTTPS:      tlsLn.Addr().String(),
+		TCP:        tcpLn.Addr().String(),
+		UDP:        udpLn.LocalAddr().String(),
+		WG51820:    "127.0.0.1:" + strconv.Itoa(p51820),
+		WG443:      "127.0.0.1:" + strconv.Itoa(p443),
+		WGAbitrary: "127.0.0.1:" + strconv.Itoa(pArb),
 	}
 }
 
@@ -75,8 +80,8 @@ func TestRunAgainstRealServer(t *testing.T) {
 	var out bytes.Buffer
 	results := client.Run(context.Background(), startServer(t), 5*time.Second, 2*time.Second, 5*time.Second, &out)
 
-	if len(results) != 7 {
-		t.Fatalf("len(results) = %d, want 7", len(results))
+	if len(results) != 8 {
+		t.Fatalf("len(results) = %d, want 8", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusPass {
@@ -101,7 +106,7 @@ func TestRunAgainstRealServer(t *testing.T) {
 		"src=127.0.0.1:",
 		"rtt=",
 		"Conclusion:",
-		"tests 1-7",
+		"tests 1-8",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report missing %q:\n%s", want, report)
@@ -117,11 +122,11 @@ func TestRunAgainstNothing(t *testing.T) {
 	var out bytes.Buffer
 	results := client.Run(context.Background(), client.Target{
 		HTTPS: "127.0.0.1:1", TCP: "127.0.0.1:1", UDP: "127.0.0.1:1",
-		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1",
+		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1", WGAbitrary: "127.0.0.1:1",
 	}, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, &out)
 
-	if len(results) != 7 {
-		t.Fatalf("len(results) = %d, want 7", len(results))
+	if len(results) != 8 {
+		t.Fatalf("len(results) = %d, want 8", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusFail {
@@ -132,7 +137,7 @@ func TestRunAgainstNothing(t *testing.T) {
 		}
 	}
 	report := out.String()
-	if !strings.Contains(report, "7 of 7 tests failed") {
+	if !strings.Contains(report, "8 of 8 tests failed") {
 		t.Errorf("report missing failure conclusion:\n%s", report)
 	}
 }
@@ -149,8 +154,8 @@ func TestWG51820FailsMarksSixSevenUntestable(t *testing.T) {
 	var out bytes.Buffer
 	results := client.Run(context.Background(), tgt, time.Second, 500*time.Millisecond, time.Second, &out)
 
-	if len(results) != 7 {
-		t.Fatalf("len(results) = %d, want 7", len(results))
+	if len(results) != 8 {
+		t.Fatalf("len(results) = %d, want 8", len(results))
 	}
 	byName := map[string]protocol.Result{}
 	for _, r := range results {

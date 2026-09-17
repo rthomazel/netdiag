@@ -18,6 +18,7 @@ const (
 	envUDP     = "NETDIAG_UDP"
 	envWG51820 = "NETDIAG_WG_51820"
 	envWG443   = "NETDIAG_WG_443"
+	envWGAbitrary = "NETDIAG_WG_ARBITRARY"
 )
 
 func main() {
@@ -25,15 +26,16 @@ func main() {
 		HTTPS:   envOr(envHTTPS, ":443"),
 		TCP:     envOr(envTCP, ":8443"),
 		UDP:     envOr(envUDP, ":60000"),
-		WG51820: envOr(envWG51820, ":51820"),
-		WG443:   envOr(envWG443, ":443"),
+		WG51820:  envOr(envWG51820, ":51820"),
+		WG443:    envOr(envWG443, ":443"),
+		WGAbitrary: envOr(envWGAbitrary, ":1194"),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("netdiag server: https=%s tcp=%s udp=%s wg51820=%s wg443=%s",
-		cfg.HTTPS, cfg.TCP, cfg.UDP, cfg.WG51820, cfg.WG443)
+	log.Printf("netdiag server: https=%s tcp=%s udp=%s wg51820=%s wg443=%s wgArbitrary=%s",
+		cfg.HTTPS, cfg.TCP, cfg.UDP, cfg.WG51820, cfg.WG443, cfg.WGAbitrary)
 	if err := server.Run(ctx, cfg); err != nil {
 		log.Fatal(err)
 	}
