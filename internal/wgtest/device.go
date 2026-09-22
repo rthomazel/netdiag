@@ -30,6 +30,17 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 )
 
+// Debug controls whether WireGuard devices emit their verbose library logging
+// (the DEBUG: lines). It is disabled by default so the client produces a clean
+// PASS/FAIL report; the client's -debug flag enables it, and the server opts
+// back into it to preserve its historical debug output. It must be set before
+// any Device is constructed.
+var Debug bool
+
+// SetDebug toggles verbose WireGuard device logging. It must be called before
+// any Device is constructed.
+func SetDebug(on bool) { Debug = on }
+
 // Device is an in-memory WireGuard endpoint: a ChannelTUN behind a real UDP
 // bind. Packets injected into TUN.Outbound are encrypted and sent to the
 // configured peer; decrypted packets arrive on TUN.Inbound.
@@ -139,10 +150,14 @@ func newDeviceWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP neti
 			"allowed_ip", peerIP.String()+"/32",
 		)
 	}
+	level := device.LogLevelSilent
+	if Debug {
+		level = device.LogLevelVerbose
+	}
 	chTun := tuntest.NewChannelTUN()
 	d := &Device{
 		Device: device.NewDevice(chTun.TUN(), bind,
-			device.NewLogger(device.LogLevelVerbose, "")),
+			device.NewLogger(level, "")),
 		TUN: chTun,
 		IP:  ip,
 		pk:  sk,

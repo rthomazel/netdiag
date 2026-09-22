@@ -8,26 +8,27 @@ import (
 	"syscall"
 
 	"github.com/rthomazel/netdiag/internal/server"
+	"github.com/rthomazel/netdiag/internal/wgtest"
 )
 
 // Listen address env vars, with the defaults as their fallbacks.
 // NETDIAG_ prefix so it's obvious which daemon they belong to.
 const (
-	envHTTPS   = "NETDIAG_HTTPS"
-	envTCP     = "NETDIAG_TCP"
-	envUDP     = "NETDIAG_UDP"
-	envWG51820 = "NETDIAG_WG_51820"
-	envWG443   = "NETDIAG_WG_443"
+	envHTTPS      = "NETDIAG_HTTPS"
+	envTCP        = "NETDIAG_TCP"
+	envUDP        = "NETDIAG_UDP"
+	envWG51820    = "NETDIAG_WG_51820"
+	envWG443      = "NETDIAG_WG_443"
 	envWGAbitrary = "NETDIAG_WG_ARBITRARY"
 )
 
 func main() {
 	cfg := server.Config{
-		HTTPS:   envOr(envHTTPS, ":443"),
-		TCP:     envOr(envTCP, ":8443"),
-		UDP:     envOr(envUDP, ":60000"),
-		WG51820:  envOr(envWG51820, ":51820"),
-		WG443:    envOr(envWG443, ":443"),
+		HTTPS:      envOr(envHTTPS, ":443"),
+		TCP:        envOr(envTCP, ":8443"),
+		UDP:        envOr(envUDP, ":60000"),
+		WG51820:    envOr(envWG51820, ":51820"),
+		WG443:      envOr(envWG443, ":443"),
 		WGAbitrary: envOr(envWGAbitrary, ":1194"),
 	}
 
@@ -36,6 +37,11 @@ func main() {
 
 	log.Printf("netdiag server: https=%s tcp=%s udp=%s wg51820=%s wg443=%s wgArbitrary=%s",
 		cfg.HTTPS, cfg.TCP, cfg.UDP, cfg.WG51820, cfg.WG443, cfg.WGAbitrary)
+	// Preserve the server's historical verbose WireGuard debug output. Unlike
+	// the client, the server exposes no -debug flag; it opts back into verbose
+	// device logging so operators can still watch handshake activity.
+	wgtest.SetDebug(true)
+
 	if err := server.Run(ctx, cfg); err != nil {
 		log.Fatal(err)
 	}

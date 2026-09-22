@@ -58,6 +58,14 @@ the production condition test 5 exists to probe.
 go run ./cmd/client -server <vps-ip>
 ```
 
+Pass `-debug` to enable WireGuard `DEBUG:` output. The output is still shown on
+stdout and is also written to `network-test-debug-{unixtimestamp}.txt` in the
+current directory. The filename is safe for use from Windows batch files.
+
+```bat
+netdiag-client.exe -server <vps-ip> -debug
+```
+
 Runs tests 1-7 in order and prints one line per test as it completes, including
 the source address the server observed and the round trip. Exit code is 1 if
 any test failed, 0 otherwise. For tests 4-7 the client also speaks to the

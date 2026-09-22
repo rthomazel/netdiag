@@ -68,7 +68,7 @@ const (
 	// HTTPS service name (a diagnostics subdomain on a German-style domain,
 	// since the VPS lives in Germany) but is otherwise distinctive so it can
 	// be routed on. The client and server must agree on this exact value.
-	MarkerSNI = "diagnose.netzwerk-check.de"
+	MarkerSNI = "en.zalando.de"
 )
 
 // WGKeys carries the server's WireGuard public keys (hex-encoded) for the
