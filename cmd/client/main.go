@@ -31,12 +31,16 @@ func main() {
 	defer stop()
 
 	results := client.Run(ctx, client.Target{
-		HTTPS:   *server + ":443",
-		TCP:     *server + ":8443",
-		UDP:     *server + ":60000",
-		WG51820:  *server + ":51820",
-		WG443:    *server + ":443",
+		HTTPS:      *server + ":443",
+		TCP:        *server + ":8443",
+		UDP:        *server + ":60000",
+		WG51820:    *server + ":51820",
+		WG443:      *server + ":443",
 		WGAbitrary: *server + ":" + *wgArbitrary,
+		// Test 9 shares the HTTPS port (443) and selects the WireGuard-over-TLS
+		// transport via the marker SNI, so it dials the same address the HTTPS
+		// control plane uses.
+		WGOverTLS: *server + ":443",
 	}, *timeout, *idle, *reqTimeout, os.Stdout)
 
 	if client.AnyFailed(results) {

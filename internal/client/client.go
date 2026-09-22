@@ -21,16 +21,17 @@ import (
 	"github.com/rthomazel/netdiag/internal/wgtest"
 )
 
-// Target holds the five VPS addresses the tests dial. One port per test;
-// the CLI derives them from a single host flag, but taking full host:port
-// pairs here keeps the package testable on ephemeral local ports.
+// Target holds the VPS addresses the tests dial. One port per test; the CLI
+// derives them from a single host flag, but taking full host:port pairs here
+// keeps the package testable on ephemeral local ports.
 type Target struct {
-	HTTPS   string
-	TCP     string
-	UDP     string
-	WG51820 string // WireGuard endpoint for test 4
-	WG443    string // WireGuard endpoint for test 5
+	HTTPS      string // HTTPS control plane and the shared test 9 port
+	TCP        string
+	UDP        string
+	WG51820    string // WireGuard endpoint for test 4
+	WG443      string // WireGuard endpoint for test 5
 	WGAbitrary string // WireGuard endpoint for test 6 (arbitrary port)
+	WGOverTLS  string // WireGuard-over-TLS endpoint for test 9 (reuses the HTTPS port with a marker SNI)
 }
 
 // Run executes the tests in order, printing each result as it completes
@@ -42,11 +43,14 @@ type Target struct {
 // so a small -timeout never caps the 60s idle.
 func Run(ctx context.Context, t Target, timeout, persistentWindow, reqTimeout time.Duration, w io.Writer) []protocol.Result {
 	fmt.Fprintln(w, "Client Network Connectivity Test")
-	results := make([]protocol.Result, 0, 8)
+	results := make([]protocol.Result, 0, 9)
 	tests := []func(ctx context.Context) protocol.Result{
 		func(ctx context.Context) protocol.Result { return httpsTest(ctx, t.HTTPS, timeout) },
 		func(ctx context.Context) protocol.Result { return tcpTest(ctx, t.TCP, timeout) },
 		func(ctx context.Context) protocol.Result { return udpTest(ctx, t.UDP, timeout) },
+		// Test 9 dials the HTTPS port again with the marker SNI, so it shares
+		// t.WGOverTLS for the transport and t.HTTPS for the status control plane.
+		func(ctx context.Context) protocol.Result { return wgOverTLSTest(ctx, t.WGOverTLS, t.HTTPS, timeout, reqTimeout) },
 	}
 	for _, test := range tests {
 		res := test(ctx)
@@ -141,6 +145,10 @@ func label(res protocol.Result, t Target) string {
 		return "WireGuard UDP/" + portOf(t.WG443)
 	case protocol.TestWGAbitrary:
 		return "WireGuard UDP/" + portOf(t.WGAbitrary)
+	// Test 9 reuses the HTTPS port with a marker SNI, so the label notes the
+	// shared port and the test name.
+	case protocol.TestWGOverTLS:
+		return "WireGuard TLS/443"
 	case protocol.TestPersistent:
 		return "WireGuard persistent"
 	case protocol.TestBidir:
@@ -173,7 +181,7 @@ func printConclusion(w io.Writer, results []protocol.Result) {
 	}
 	fmt.Fprintln(w, "Conclusion:")
 	if failed == 0 {
-		fmt.Fprintln(w, "WireGuard works end to end: handshake on standard, non-standard, and arbitrary ports, NAT mapping holds across the idle window, and traffic flows in both directions (tests 1-8). Direct WireGuard connectivity appears viable.")
+		fmt.Fprintln(w, "WireGuard works end to end: handshake on standard, non-standard, and arbitrary ports, handshake hidden inside TLS/443, NAT mapping holds across the idle window, and traffic flows in both directions (tests 1-9). Direct WireGuard connectivity appears viable.")
 		return
 	}
 	fmt.Fprintf(w, "%d of %d tests failed - the FAIL lines above show where the network blocks us.\n", failed, len(results))

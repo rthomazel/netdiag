@@ -56,6 +56,12 @@ func publicKey(sk [32]byte) [32]byte {
 	return pub
 }
 
+// DerivePublicKey is the exported form of publicKey. It lets a caller publish
+// a device's public key before the device itself is constructed, which is the
+// WireGuard-over-TLS handshake: the client sends its public key over the TLS
+// stream first, so it must derive it from its private key without a device.
+func DerivePublicKey(sk [32]byte) [32]byte { return publicKey(sk) }
+
 // New builds an in-memory device at tunnel address ip, listening on
 // listenPort (0 picks an ephemeral port, read back with ListenPort). If
 // peerPub is non-zero the peer at peerIP is configured immediately; otherwise
@@ -73,11 +79,56 @@ func NewClient(ip netip.Addr, peerPub [32]byte, peerIP netip.Addr) (*Device, err
 	return newDevice(ip, 0, peerPub, peerIP)
 }
 
+// NewWithBind builds a device exactly like New, but behind a caller-supplied
+// conn.Bind instead of the default UDP StdNetBind. The bind is passed straight
+// to device.NewDevice, which is why the device is created in the "down" state
+// here and only brought up by the caller once the bind is ready to receive.
+// This is the entry point for transports that are not UDP, such as the
+// WireGuard-over-TLS test that wraps a *tls.Conn in a custom bind.
+func NewWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind) (*Device, error) {
+	return newDeviceWithBind(ip, sk, peerPub, peerIP, bind)
+}
+
+// NewClientWithBind builds the client side of a handshake test exactly like
+// NewClient, but behind a caller-supplied conn.Bind instead of the default
+// UDP StdNetBind. It generates a fresh random key internally, so it is the
+// entry point for the WireGuard-over-TLS client, which must Up() its device
+// only after its *tls.Conn is dialled and the control keys have been
+// exchanged.
+func NewClientWithBind(ip netip.Addr, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind) (*Device, error) {
+	return newDeviceWithBind(ip, newKey(), peerPub, peerIP, bind)
+}
+
+// NewRandomKey returns a fresh random Curve25519 private key. It is exposed so
+// the server side of a WireGuard-over-TLS handshake can generate its own
+// device key per connection, mirroring the client's key generation.
+func NewRandomKey() [32]byte {
+	return newKey()
+}
+
 func newDevice(ip netip.Addr, listenPort int, peerPub [32]byte, peerIP netip.Addr) (*Device, error) {
 	sk := newKey()
+	d, err := newDeviceWithBind(ip, sk, peerPub, peerIP, conn.NewStdNetBind())
+	if err != nil {
+		return nil, err
+	}
+	// The UDP bind is already connected (it listens on the requested port) the
+	// instant the device is constructed, so the device can be brought up
+	// immediately - the existing handshake tests rely on New/NewClient returning
+	// an up, ready device. Callers of NewWithBind that supply a non-UDP bind
+	// (e.g. a TLS connection that is not yet connected) Up() the device
+	// themselves once that bind is ready.
+	if err := d.Up(); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("wgtest: up: %w", err)
+	}
+	return d, nil
+}
+
+func newDeviceWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind) (*Device, error) {
 	cfg := uapi(
 		"private_key", hex.EncodeToString(sk[:]),
-		"listen_port", strconv.Itoa(listenPort),
+		"listen_port", "0",
 	)
 	if peerPub != ([32]byte{}) {
 		cfg += uapi(
@@ -90,7 +141,7 @@ func newDevice(ip netip.Addr, listenPort int, peerPub [32]byte, peerIP netip.Add
 	}
 	chTun := tuntest.NewChannelTUN()
 	d := &Device{
-		Device: device.NewDevice(chTun.TUN(), conn.NewStdNetBind(),
+		Device: device.NewDevice(chTun.TUN(), bind,
 			device.NewLogger(device.LogLevelVerbose, "")),
 		TUN: chTun,
 		IP:  ip,
@@ -100,10 +151,13 @@ func newDevice(ip netip.Addr, listenPort int, peerPub [32]byte, peerIP netip.Add
 		d.Close()
 		return nil, fmt.Errorf("wgtest: configure: %w", err)
 	}
-	if err := d.Up(); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("wgtest: up: %w", err)
-	}
+	// The device is left in the down state here on purpose. For a UDP bind the
+	// caller (newDevice) brings it up immediately, because the bind is already
+	// listening the instant the device is constructed. A caller of
+	// NewWithBind that supplies a custom bind - such as the WireGuard-over-TLS
+	// transport, which is only connected once its *tls.Conn is dialled - Up()s
+	// the device itself after that bind is ready to receive, so the device is
+	// never up behind a bind that cannot yet serve packets.
 	return d, nil
 }
 

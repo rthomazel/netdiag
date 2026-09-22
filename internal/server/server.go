@@ -11,6 +11,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/rthomazel/netdiag/internal/protocol"
+	"github.com/rthomazel/netdiag/internal/wgtest"
 )
 
 // readTimeout bounds how long the listeners wait for a client frame before
@@ -37,7 +39,7 @@ const readTimeout = 5 * time.Second
 
 // Config holds the listen addresses for the test listeners.
 type Config struct {
-	HTTPS   string
+	HTTPS   string // Plain TCP address shared by the HTTPS test and the WireGuard-over-TLS test
 	TCP     string
 	UDP     string
 	WG51820  string // UDP address for the WireGuard test 4 listener
@@ -47,10 +49,11 @@ type Config struct {
 
 // Server holds the pre-bound listeners that Serve runs.
 type Server struct {
-	HTTPS net.Listener
+	HTTPS net.Listener // Plain TCP listener shared by the HTTPS test and test 9
 	TCP   net.Listener
 	UDP   *net.UDPConn
 	WG    *WG
+	Cert  tls.Certificate // Certificate the shared listener terminates TLS with
 }
 
 // Run binds the listeners from cfg and serves them until ctx is canceled.
@@ -60,37 +63,43 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("self-signed cert: %w", err)
 	}
 
-	tlsLn, err := tls.Listen("tcp", cfg.HTTPS, &tls.Config{Certificates: []tls.Certificate{cert}})
+	// The HTTPS port is shared with the WireGuard-over-TLS test: one plain TCP
+	// listener is accepted on cfg.HTTPS, TLS is terminated per connection, and
+	// the SNI decides whether the connection is an ordinary HTTPS request or a
+	// WireGuard-over-TLS handshake. This is the whole point of test 9 - the
+	// client dials the same port with a distinctive SNI.
+	httpsLn, err := net.Listen("tcp", cfg.HTTPS)
 	if err != nil {
 		return fmt.Errorf("https %s: %w", cfg.HTTPS, err)
 	}
 	tcpLn, err := net.Listen("tcp", cfg.TCP)
 	if err != nil {
-		tlsLn.Close()
+		httpsLn.Close()
 		return fmt.Errorf("tcp %s: %w", cfg.TCP, err)
 	}
 	udpAddr, err := net.ResolveUDPAddr("udp", cfg.UDP)
 	if err != nil {
-		tlsLn.Close()
+		httpsLn.Close()
 		tcpLn.Close()
 		return fmt.Errorf("udp %s: %w", cfg.UDP, err)
 	}
 	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		tlsLn.Close()
+		httpsLn.Close()
 		tcpLn.Close()
+		udpConn.Close()
 		return fmt.Errorf("udp %s: %w", cfg.UDP, err)
 	}
 
 	wg, err := NewWG(cfg.WG51820, cfg.WG443, cfg.WGAbitrary)
 	if err != nil {
-		tlsLn.Close()
+		httpsLn.Close()
 		tcpLn.Close()
 		udpConn.Close()
 		return err
 	}
 
-	return Serve(ctx, Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpConn, WG: wg})
+	return Serve(ctx, Server{HTTPS: httpsLn, TCP: tcpLn, UDP: udpConn, WG: wg, Cert: cert})
 }
 
 // Serve runs the listeners until ctx is canceled, then closes them. It takes
@@ -105,7 +114,7 @@ func Serve(ctx context.Context, s Server) error {
 			s.WG.Close()
 		}
 	}()
-	go serveHTTPS(ctx, s.HTTPS, s.WG)
+	go serveHTTPS(ctx, s.HTTPS, s.WG, s.Cert)
 	go acceptTCP(ctx, s.TCP)
 	go readUDP(ctx, s.UDP)
 
@@ -113,16 +122,120 @@ func Serve(ctx context.Context, s Server) error {
 	return nil
 }
 
-// serveHTTPS is the listener for test https443. Any request is answered with
-// a JSON Result carrying the source address it observed.
-func serveHTTPS(ctx context.Context, ln net.Listener, wg *WG) {
-	log.Printf("listening for test %s on %s (self-signed TLS)", protocol.TestHTTPS443, ln.Addr())
-	srv := &http.Server{Handler: httpsHandler(wg)}
-	// Closing the listener at shutdown makes Serve return a non-nil, non-ErrServerClosed
-	// error; the ctx check keeps that out of the log.
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed && ctx.Err() == nil {
-		log.Printf("https: %v", err)
+// serveHTTPS is the shared listener. It terminates TLS per connection and
+// routes on the ServerName from the ClientHello: the marker SNI selects the
+// WireGuard-over-TLS handshake (test 9), any other name is served by the
+// ordinary HTTPS control plane. Sharing one listener is the point of test 9 -
+// the client dials the same port the HTTPS test uses.
+func serveHTTPS(ctx context.Context, ln net.Listener, wg *WG, cert tls.Certificate) {
+	log.Printf("listening for test %s on %s (self-signed TLS, shared with %s)", protocol.TestHTTPS443, ln.Addr(), protocol.TestWGOverTLS)
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("https: accept: %v", err)
+			}
+			return
+		}
+		go serveHTTPSConn(ctx, conn, wg, tlsConfig)
 	}
+}
+
+// serveHTTPSConn terminates the TLS handshake, inspects the SNI, and routes the
+// connection to the WireGuard-over-TLS handler or the HTTPS control plane.
+func serveHTTPSConn(ctx context.Context, raw net.Conn, wg *WG, tlsConfig *tls.Config) {
+	defer raw.Close()
+	tlsConn := tls.Server(raw, tlsConfig)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return
+	}
+	sni := tlsConn.ConnectionState().ServerName
+	if sni == protocol.MarkerSNI {
+		handleWGOverTLS(ctx, tlsConn, wg)
+		return
+	}
+	serveHTTPSRequest(ctx, tlsConn, wg)
+}
+
+// serveHTTPSRequest serves a single HTTPS request read from the connection and
+// writes the response back. The client uses DisableKeepAlives, so one request
+// per connection is all the harness ever needs.
+func serveHTTPSRequest(ctx context.Context, conn *tls.Conn, wg *WG) {
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	req, err := http.ReadRequest(bufio.NewReader(conn))
+	if err != nil {
+		return
+	}
+	// http.ReadRequest does not set req.RemoteAddr - the real net/http server
+	// does, because it accepts the connection. We must set it here so the
+	// /wg control plane can report the observed source address (the NAT info
+	// the report is built from).
+	req.RemoteAddr = conn.RemoteAddr().String()
+	w := &connResponseWriter{conn: conn}
+	httpsHandler(wg).ServeHTTP(w, req)
+	w.finish()
+}
+
+// connResponseWriter is a minimal http.ResponseWriter that writes an
+// HTTP/1.1 response over a single connection. The standard http.Server is
+// unavailable for per-connection TLS here (its per-connection serve helpers
+// are not exposed in Go 1.26), so the client's request/response are served
+// manually: one request is read, the mux serves it, and the response is
+// streamed and the connection is closed to signal the end.
+type connResponseWriter struct {
+	conn      *tls.Conn
+	status    int
+	hasStatus bool
+	header    http.Header
+	wroteHdr  bool
+}
+
+func (w *connResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+// WriteHeader records the status code. Only the first call takes effect,
+// matching the http.ResponseWriter contract.
+func (w *connResponseWriter) WriteHeader(code int) {
+	if w.hasStatus {
+		return
+	}
+	w.status = code
+	w.hasStatus = true
+}
+
+// flushHeaders writes the status line and headers on the first write.
+func (w *connResponseWriter) flushHeaders() {
+	if w.wroteHdr {
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n", w.status, http.StatusText(w.status))
+	if w.header != nil {
+		_ = w.header.Write(w.conn)
+	}
+	_, _ = w.conn.Write([]byte("\r\n"))
+	w.wroteHdr = true
+}
+
+// Write streams the body. The status line and headers are written on the first
+// Write if they have not been written yet, which is the common case for the
+// JSON handlers here.
+func (w *connResponseWriter) Write(b []byte) (int, error) {
+	w.flushHeaders()
+	return w.conn.Write(b)
+}
+
+// finish writes the headers if needed, then closes the connection to signal
+// the end of the response. The client uses DisableKeepAlives, so it reads the
+// response until the connection closes.
+func (w *connResponseWriter) finish() {
+	w.flushHeaders()
+	_ = w.conn.Close()
 }
 
 // httpsHandler is the listener for test https443. Any request is answered
@@ -174,7 +287,13 @@ func httpsHandler(wg *WG) http.Handler {
 		})
 		mux.HandleFunc("/wg/status/", func(w http.ResponseWriter, r *http.Request) {
 			name := strings.TrimPrefix(r.URL.Path, "/wg/status/")
-			st, err := wg.Status(name)
+			var st wgtest.Status
+			var err error
+			if name == protocol.TestWGOverTLS {
+				st, err = wg.statusOverTLS()
+			} else {
+				st, err = wg.Status(name)
+			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
