@@ -86,7 +86,7 @@ func NewClient(ip netip.Addr, peerPub [32]byte, peerIP netip.Addr) (*Device, err
 // This is the entry point for transports that are not UDP, such as the
 // WireGuard-over-TLS test that wraps a *tls.Conn in a custom bind.
 func NewWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind) (*Device, error) {
-	return newDeviceWithBind(ip, sk, peerPub, peerIP, bind)
+	return newDeviceWithBind(ip, sk, peerPub, peerIP, bind, 0)
 }
 
 // NewClientWithBind builds the client side of a handshake test exactly like
@@ -96,7 +96,7 @@ func NewWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP netip.Addr
 // only after its *tls.Conn is dialled and the control keys have been
 // exchanged.
 func NewClientWithBind(ip netip.Addr, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind) (*Device, error) {
-	return newDeviceWithBind(ip, newKey(), peerPub, peerIP, bind)
+	return newDeviceWithBind(ip, newKey(), peerPub, peerIP, bind, 0)
 }
 
 // NewRandomKey returns a fresh random Curve25519 private key. It is exposed so
@@ -108,7 +108,7 @@ func NewRandomKey() [32]byte {
 
 func newDevice(ip netip.Addr, listenPort int, peerPub [32]byte, peerIP netip.Addr) (*Device, error) {
 	sk := newKey()
-	d, err := newDeviceWithBind(ip, sk, peerPub, peerIP, conn.NewStdNetBind())
+	d, err := newDeviceWithBind(ip, sk, peerPub, peerIP, conn.NewStdNetBind(), listenPort)
 	if err != nil {
 		return nil, err
 	}
@@ -125,10 +125,10 @@ func newDevice(ip netip.Addr, listenPort int, peerPub [32]byte, peerIP netip.Add
 	return d, nil
 }
 
-func newDeviceWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind) (*Device, error) {
+func newDeviceWithBind(ip netip.Addr, sk [32]byte, peerPub [32]byte, peerIP netip.Addr, bind conn.Bind, listenPort int) (*Device, error) {
 	cfg := uapi(
 		"private_key", hex.EncodeToString(sk[:]),
-		"listen_port", "0",
+		"listen_port", strconv.Itoa(listenPort),
 	)
 	if peerPub != ([32]byte{}) {
 		cfg += uapi(
