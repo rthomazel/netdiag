@@ -20,11 +20,11 @@ import (
 	"github.com/rthomazel/netdiag/internal/wgtest"
 )
 
-// startWG builds a WG backend on two ephemeral loopback UDP ports and
+// startWG builds a WG backend on three ephemeral loopback UDP ports and
 // returns it with the actual ports read back.
-func startWG(t *testing.T) (*WG, int, int) {
+func startWG(t *testing.T) (*WG, int, int, int) {
 	t.Helper()
-	wg, err := NewWG("127.0.0.1:0", "127.0.0.1:0")
+	wg, err := NewWG("127.0.0.1:0", "127.0.0.1:0", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewWG: %v", err)
 	}
@@ -37,11 +37,15 @@ func startWG(t *testing.T) (*WG, int, int) {
 	if err != nil {
 		t.Fatalf("Port(wg443): %v", err)
 	}
-	return wg, p51820, p443
+	pArb, err := wg.Port(protocol.TestWGAbitrary)
+	if err != nil {
+		t.Fatalf("Port(wgarbitrary): %v", err)
+	}
+	return wg, p51820, p443, pArb
 }
 
 func TestWGKeysHandler(t *testing.T) {
-	wg, _, _ := startWG(t)
+	wg, _, _, _ := startWG(t)
 	srv := httptest.NewTLSServer(httpsHandler(wg))
 	defer srv.Close()
 
@@ -57,16 +61,16 @@ func TestWGKeysHandler(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&keys); err != nil {
 		t.Fatalf("decode keys: %v", err)
 	}
-	if len(keys.WG51820) != 64 || len(keys.WG443) != 64 {
-		t.Fatalf("bad key lengths: %d, %d", len(keys.WG51820), len(keys.WG443))
+	if len(keys.WG51820) != 64 || len(keys.WG443) != 64 || len(keys.WGAbitrary) != 64 {
+		t.Fatalf("bad key lengths: %d, %d, %d", len(keys.WG51820), len(keys.WG443), len(keys.WGAbitrary))
 	}
-	if keys.WG51820 != wg.Keys().WG51820 || keys.WG443 != wg.Keys().WG443 {
+	if keys.WG51820 != wg.Keys().WG51820 || keys.WG443 != wg.Keys().WG443 || keys.WGAbitrary != wg.Keys().WGAbitrary {
 		t.Fatalf("served keys do not match the devices' public keys")
 	}
 }
 
 func TestWGRegisterRejects(t *testing.T) {
-	wg, _, _ := startWG(t)
+	wg, _, _, _ := startWG(t)
 	srv := httptest.NewTLSServer(httpsHandler(wg))
 	defer srv.Close()
 
@@ -109,7 +113,7 @@ func TestWGRegisterRejects(t *testing.T) {
 }
 
 func TestWGStatusUnknown(t *testing.T) {
-	wg, _, _ := startWG(t)
+	wg, _, _, _ := startWG(t)
 	srv := httptest.NewTLSServer(httpsHandler(wg))
 	defer srv.Close()
 
@@ -128,7 +132,7 @@ func TestWGStatusUnknown(t *testing.T) {
 // completes on both sides, and the server's Status reports the client's
 // loopback source address (the NAT observation the report is built from).
 func TestWGHandshakeEndToEnd(t *testing.T) {
-	wg, p51820, _ := startWG(t)
+	wg, p51820, _, _ := startWG(t)
 	serverPub, _ := hex.DecodeString(wg.Keys().WG51820)
 
 	dev, err := wgtest.NewClient(protocol.WGSubnet51820.Client, [32]byte(serverPub), protocol.WGSubnet51820.Server)
@@ -171,7 +175,7 @@ func TestWGHandshakeEndToEnd(t *testing.T) {
 // (each client run generates fresh keys), so Status keeps working and the
 // second handshake completes.
 func TestWGSecondClientRun(t *testing.T) {
-	wg, p51820, _ := startWG(t)
+	wg, p51820, _, _ := startWG(t)
 	serverPub, _ := hex.DecodeString(wg.Keys().WG51820)
 
 	runClient := func() {
@@ -206,22 +210,23 @@ func TestWGSecondClientRun(t *testing.T) {
 	runClient() // second run: fresh key must replace the first peer
 }
 
-// TestWGDevicesIndependent ensures the two devices do not share state: a
-// handshake on the 443 device must not appear on the 51820 device.
+// TestWGDevicesIndependent ensures the three devices do not share state: a
+// handshake on the arbitrary-port device must not leak onto the 51820 or 443
+// devices.
 func TestWGDevicesIndependent(t *testing.T) {
-	wg, _, p443 := startWG(t)
-	serverPub, _ := hex.DecodeString(wg.Keys().WG443)
+	wg, _, _, pArb := startWG(t)
+	serverPub, _ := hex.DecodeString(wg.Keys().WGAbitrary)
 
-	dev, err := wgtest.NewClient(protocol.WGSubnet443.Client, [32]byte(serverPub), protocol.WGSubnet443.Server)
+	dev, err := wgtest.NewClient(protocol.WGSubnetArbitrary.Client, [32]byte(serverPub), protocol.WGSubnetArbitrary.Server)
 	if err != nil {
 		t.Fatalf("client device: %v", err)
 	}
 	defer dev.Close()
-	if err := wg.Register(protocol.TestWG443, dev.PublicKey()); err != nil {
+	if err := wg.Register(protocol.TestWGAbitrary, dev.PublicKey()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	endpoint := "127.0.0.1:" + strconv.Itoa(p443)
+	endpoint := "127.0.0.1:" + strconv.Itoa(pArb)
 	if err := dev.SetEndpointAndKeepalive([32]byte(serverPub), endpoint, 1); err != nil {
 		t.Fatalf("set endpoint: %v", err)
 	}
@@ -231,10 +236,13 @@ func TestWGDevicesIndependent(t *testing.T) {
 	if _, err := dev.WaitHandshake(ctx); err != nil {
 		t.Fatalf("client handshake: %v", err)
 	}
-	if st, _ := wg.Status(protocol.TestWG443); st.LastHandshakeSec == 0 {
-		t.Fatalf("443 handshake not confirmed")
+	if st, _ := wg.Status(protocol.TestWGAbitrary); st.LastHandshakeSec == 0 {
+		t.Fatalf("arbitrary-port handshake not confirmed")
 	}
 	if st, _ := wg.Status(protocol.TestWG51820); st.Endpoint != "" {
 		t.Fatalf("51820 device saw an endpoint %q; devices must be independent", st.Endpoint)
+	}
+	if st, _ := wg.Status(protocol.TestWG443); st.Endpoint != "" {
+		t.Fatalf("443 device saw an endpoint %q; devices must be independent", st.Endpoint)
 	}
 }

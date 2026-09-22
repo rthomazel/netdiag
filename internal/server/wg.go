@@ -10,11 +10,16 @@
 package server
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
@@ -27,18 +32,30 @@ import (
 type WG struct {
 	devs map[string]*dev
 	done chan struct{}
+
+	// overTLS holds the device serving the current WireGuard-over-TLS
+	// handshake (test 9). There is one device per marker-SNI TLS connection;
+	// the latest connection wins, since the client polls this single status
+	// slot. The mutex guards the pointer only - the device itself is owned by
+	// the handler that created it.
+	overTLSMu sync.Mutex
+	overTLS   *wgtest.Device
 }
 
-// NewWG builds the two passive WireGuard devices that serve tests 4 and 5.
-// Each listens on the port parsed from the given address (0 picks an
+// NewWG builds the three passive WireGuard devices that serve tests 4, 5,
+// and 6. Each listens on the port parsed from the given address (0 picks an
 // ephemeral port, for local runs); the client keys are unknown at this
 // point - clients register with Register.
-func NewWG(addr51820, addr443 string) (*WG, error) {
+func NewWG(addr51820, addr443, addrArbitrary string) (*WG, error) {
 	p51820, err := portOfAddr(addr51820)
 	if err != nil {
 		return nil, err
 	}
 	p443, err := portOfAddr(addr443)
+	if err != nil {
+		return nil, err
+	}
+	pArb, err := portOfAddr(addrArbitrary)
 	if err != nil {
 		return nil, err
 	}
@@ -51,10 +68,17 @@ func NewWG(addr51820, addr443 string) (*WG, error) {
 		dev51820.Close()
 		return nil, fmt.Errorf("wg %s: %w", protocol.TestWG443, err)
 	}
+	devArb, err := wgtest.New(protocol.WGSubnetArbitrary.Server, pArb, [32]byte{}, netip.Addr{})
+	if err != nil {
+		dev51820.Close()
+		dev443.Close()
+		return nil, fmt.Errorf("wg %s: %w", protocol.TestWGAbitrary, err)
+	}
 	w := &WG{
 		devs: map[string]*dev{
 			protocol.TestWG51820: {name: protocol.TestWG51820, dev: dev51820, subnet: protocol.WGSubnet51820},
 			protocol.TestWG443:   {name: protocol.TestWG443, dev: dev443, subnet: protocol.WGSubnet443},
+			protocol.TestWGAbitrary: {name: protocol.TestWGAbitrary, dev: devArb, subnet: protocol.WGSubnetArbitrary},
 		},
 		done: make(chan struct{}),
 	}
@@ -64,14 +88,16 @@ func NewWG(addr51820, addr443 string) (*WG, error) {
 	return w, nil
 }
 
-// Keys returns the public keys of both devices (hex-encoded), in the shape
-// the /wg handler serves.
+// Keys returns the public keys of all three devices (hex-encoded), in the
+// shape the /wg handler serves.
 func (w *WG) Keys() protocol.WGKeys {
 	pub51820 := w.devs[protocol.TestWG51820].dev.PublicKey()
 	pub443 := w.devs[protocol.TestWG443].dev.PublicKey()
+	pubArb := w.devs[protocol.TestWGAbitrary].dev.PublicKey()
 	return protocol.WGKeys{
-		WG51820: hex.EncodeToString(pub51820[:]),
-		WG443:   hex.EncodeToString(pub443[:]),
+		WG51820:    hex.EncodeToString(pub51820[:]),
+		WG443:      hex.EncodeToString(pub443[:]),
+		WGAbitrary: hex.EncodeToString(pubArb[:]),
 	}
 }
 
@@ -106,6 +132,114 @@ func (w *WG) Status(name string) (wgtest.Status, error) {
 		return wgtest.Status{}, fmt.Errorf("unknown wg test %q", name)
 	}
 	return d.dev.Status()
+}
+
+// handleWGOverTLS serves one WireGuard-over-TLS handshake (test 9). The
+// client and server exchange device public keys as control frames, then run
+// the handshake over the same TLS connection. The client initiates via its
+// keepalive; the server device is passive and replies.
+//
+// The device created here is tracked in the WG slot so the client can poll its
+// status over HTTPS after the handshake completes. The device is held active
+// until the client closes the connection, because the client polls the status
+// only after the handshake finishes - and it closes the connection when its
+// test returns.
+func handleWGOverTLS(ctx context.Context, conn *tls.Conn, wg *WG) {
+	log.Printf("%s from %s", protocol.TestWGOverTLS, conn.RemoteAddr())
+
+	// Read the client's public key. The client writes first, so the server
+	// reads first: this ordering is deadlock-free.
+	typ, data, err := protocol.ReadFrame(conn)
+	if err != nil {
+		log.Printf("%s: read client key: %v", protocol.TestWGOverTLS, err)
+		return
+	}
+	if typ != protocol.WgOverTLSControlType || len(data) != 32 {
+		log.Printf("%s: bad client key frame", protocol.TestWGOverTLS)
+		return
+	}
+	var clientPub [32]byte
+	copy(clientPub[:], data)
+
+	// Create a passive device for this connection. The client generates its
+	// own key; the server generates a fresh one here, mirroring the client.
+	sk := wgtest.NewRandomKey()
+	bind := wgtest.NewTLSBind(conn)
+	dev, err := wgtest.NewWithBind(protocol.WGSubnetTLS.Server, sk, clientPub, protocol.WGSubnetTLS.Client, bind)
+	if err != nil {
+		log.Printf("%s: create device: %v", protocol.TestWGOverTLS, err)
+		return
+	}
+	defer dev.Close()
+
+	if err := dev.Up(); err != nil {
+		log.Printf("%s: up device: %v", protocol.TestWGOverTLS, err)
+		return
+	}
+	wg.setOverTLS(dev)
+	defer wg.clearOverTLS()
+
+	// Send our public key back. The client reads this after it has written its
+	// own, so the exchange is a clean request-response.
+	serverPub := dev.PublicKey()
+	if err := protocol.WriteFrame(conn, protocol.WgOverTLSControlType, serverPub[:]); err != nil {
+		log.Printf("%s: write server key: %v", protocol.TestWGOverTLS, err)
+		return
+	}
+
+	// Wait for the handshake to complete, holding the device active until the
+	// client closes the connection so it can poll the status afterward.
+	hsDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				st, err := dev.Status()
+				if err == nil && st.LastHandshakeSec > 0 {
+					close(hsDone)
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	<-hsDone
+	<-bind.ReaderExited()
+}
+
+// setOverTLS records the device serving the current WireGuard-over-TLS
+// handshake. The latest connection wins, so a stale peer slot never outlives
+// its connection.
+func (w *WG) setOverTLS(dev *wgtest.Device) {
+	w.overTLSMu.Lock()
+	w.overTLS = dev
+	w.overTLSMu.Unlock()
+}
+
+// clearOverTLS drops the active over-TLS device slot. It is called after the
+// handshake connection closes so a subsequent status poll does not report on
+// a dead peer.
+func (w *WG) clearOverTLS() {
+	w.overTLSMu.Lock()
+	w.overTLS = nil
+	w.overTLSMu.Unlock()
+}
+
+// statusOverTLS snapshots the current over-TLS handshake device. It returns an
+// empty status (not an error) when no connection is active yet, so the client
+// can poll the slot over HTTPS without special-casing a 404.
+func (w *WG) statusOverTLS() (wgtest.Status, error) {
+	w.overTLSMu.Lock()
+	dev := w.overTLS
+	w.overTLSMu.Unlock()
+	if dev == nil {
+		return wgtest.Status{}, nil
+	}
+	return dev.Status()
 }
 
 // echoLoop is the tunnel echo responder (tests 6 and 7): it reads ping

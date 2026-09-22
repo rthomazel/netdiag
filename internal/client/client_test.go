@@ -3,7 +3,6 @@ package client_test
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"net"
 	"strconv"
 	"strings"
@@ -25,7 +24,10 @@ func startServer(t *testing.T) client.Target {
 	if err != nil {
 		t.Fatalf("cert: %v", err)
 	}
-	tlsLn, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	// Test 9 shares the HTTPS port with the marker-SNI WireGuard-over-TLS
+	// transport, so the shared listener must be plain TCP: the server decides
+	// whether to run the HTTPS control plane or the WG handshake by the SNI.
+	httpsLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +39,7 @@ func startServer(t *testing.T) client.Target {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wg, err := server.NewWG("127.0.0.1:0", "127.0.0.1:0")
+	wg, err := server.NewWG("127.0.0.1:0", "127.0.0.1:0", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("wg: %v", err)
 	}
@@ -46,7 +48,7 @@ func startServer(t *testing.T) client.Target {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = server.Serve(ctx, server.Server{HTTPS: tlsLn, TCP: tcpLn, UDP: udpLn, WG: wg})
+		_ = server.Serve(ctx, server.Server{HTTPS: httpsLn, TCP: tcpLn, UDP: udpLn, WG: wg, Cert: cert})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -61,13 +63,22 @@ func startServer(t *testing.T) client.Target {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pArb, err := wg.Port(protocol.TestWGAbitrary)
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	// Test 9 shares the HTTPS port, so the client points WGOverTLS at the same
+	// address the HTTPS control plane listens on; the marker SNI selects the
+	// transport. The status poll still goes over t.HTTPS.
 	return client.Target{
-		HTTPS:   tlsLn.Addr().String(),
-		TCP:     tcpLn.Addr().String(),
-		UDP:     udpLn.LocalAddr().String(),
-		WG51820: "127.0.0.1:" + strconv.Itoa(p51820),
-		WG443:   "127.0.0.1:" + strconv.Itoa(p443),
+		HTTPS:      httpsLn.Addr().String(),
+		TCP:        tcpLn.Addr().String(),
+		UDP:        udpLn.LocalAddr().String(),
+		WG51820:    "127.0.0.1:" + strconv.Itoa(p51820),
+		WG443:      "127.0.0.1:" + strconv.Itoa(p443),
+		WGAbitrary: "127.0.0.1:" + strconv.Itoa(pArb),
+		WGOverTLS:  httpsLn.Addr().String(),
 	}
 }
 
@@ -75,8 +86,8 @@ func TestRunAgainstRealServer(t *testing.T) {
 	var out bytes.Buffer
 	results := client.Run(context.Background(), startServer(t), 5*time.Second, 2*time.Second, 5*time.Second, &out)
 
-	if len(results) != 7 {
-		t.Fatalf("len(results) = %d, want 7", len(results))
+	if len(results) != 9 {
+		t.Fatalf("len(results) = %d, want 9", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusPass {
@@ -96,12 +107,13 @@ func TestRunAgainstRealServer(t *testing.T) {
 		"[PASS] TCP/",
 		"[PASS] UDP/",
 		"[PASS] WireGuard UDP/",
+		"[PASS] WireGuard TLS/443",
 		"[PASS] WireGuard persistent",
 		"[PASS] WireGuard bidir",
 		"src=127.0.0.1:",
 		"rtt=",
 		"Conclusion:",
-		"tests 1-7",
+		"tests 1-9",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report missing %q:\n%s", want, report)
@@ -117,11 +129,12 @@ func TestRunAgainstNothing(t *testing.T) {
 	var out bytes.Buffer
 	results := client.Run(context.Background(), client.Target{
 		HTTPS: "127.0.0.1:1", TCP: "127.0.0.1:1", UDP: "127.0.0.1:1",
-		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1",
+		WG51820: "127.0.0.1:1", WG443: "127.0.0.1:1", WGAbitrary: "127.0.0.1:1",
+		WGOverTLS: "127.0.0.1:1",
 	}, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, &out)
 
-	if len(results) != 7 {
-		t.Fatalf("len(results) = %d, want 7", len(results))
+	if len(results) != 9 {
+		t.Fatalf("len(results) = %d, want 9", len(results))
 	}
 	for _, res := range results {
 		if res.Status != protocol.StatusFail {
@@ -132,7 +145,7 @@ func TestRunAgainstNothing(t *testing.T) {
 		}
 	}
 	report := out.String()
-	if !strings.Contains(report, "7 of 7 tests failed") {
+	if !strings.Contains(report, "9 of 9 tests failed") {
 		t.Errorf("report missing failure conclusion:\n%s", report)
 	}
 }
@@ -149,8 +162,8 @@ func TestWG51820FailsMarksSixSevenUntestable(t *testing.T) {
 	var out bytes.Buffer
 	results := client.Run(context.Background(), tgt, time.Second, 500*time.Millisecond, time.Second, &out)
 
-	if len(results) != 7 {
-		t.Fatalf("len(results) = %d, want 7", len(results))
+	if len(results) != 9 {
+		t.Fatalf("len(results) = %d, want 9", len(results))
 	}
 	byName := map[string]protocol.Result{}
 	for _, r := range results {
@@ -158,6 +171,11 @@ func TestWG51820FailsMarksSixSevenUntestable(t *testing.T) {
 	}
 	if r := byName[protocol.TestWG51820]; r.Status != protocol.StatusFail {
 		t.Errorf("wg51820 = %s, want fail (dead port)", r.Status)
+	}
+	// Test 9 dials the shared HTTPS port with the marker SNI, so it is
+	// independent of the 51820 UDP device and passes on its own terms here.
+	if r := byName[protocol.TestWGOverTLS]; r.Status != protocol.StatusPass {
+		t.Errorf("wgovertls = %s, want pass (shared port still serves TLS)", r.Status)
 	}
 	for _, name := range []string{protocol.TestPersistent, protocol.TestBidir} {
 		r := byName[name]

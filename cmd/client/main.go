@@ -19,10 +19,11 @@ func main() {
 	idle := flag.Duration("idle", protocol.DefaultPersistentWindow,
 		"test 6 idle window (the persistent-NAT diagnostic; 60s is the deliberate default)")
 	reqTimeout := flag.Duration("reqtimeout", 10*time.Second, "timeout per HTTPS control-plane request (key fetch, register, status poll)")
+	wgArbitrary := flag.String("wgarbitrary", "1194", "arbitrary UDP port for the extra WireGuard handshake test (must match the server's NETDIAG_WG_ARBITRARY)")
 	flag.Parse()
 
 	if *server == "" {
-		fmt.Fprintln(os.Stderr, "usage: netdiag-client -server <vps-ip> [-timeout 5s] [-idle 1m]")
+		fmt.Fprintln(os.Stderr, "usage: netdiag-client -server <vps-ip> [-timeout 5s] [-idle 1m] [-wgarbitrary 1194]")
 		os.Exit(2)
 	}
 
@@ -30,11 +31,16 @@ func main() {
 	defer stop()
 
 	results := client.Run(ctx, client.Target{
-		HTTPS:   *server + ":443",
-		TCP:     *server + ":8443",
-		UDP:     *server + ":60000",
-		WG51820: *server + ":51820",
-		WG443:   *server + ":443",
+		HTTPS:      *server + ":443",
+		TCP:        *server + ":8443",
+		UDP:        *server + ":60000",
+		WG51820:    *server + ":51820",
+		WG443:      *server + ":443",
+		WGAbitrary: *server + ":" + *wgArbitrary,
+		// Test 9 shares the HTTPS port (443) and selects the WireGuard-over-TLS
+		// transport via the marker SNI, so it dials the same address the HTTPS
+		// control plane uses.
+		WGOverTLS: *server + ":443",
 	}, *timeout, *idle, *reqTimeout, os.Stdout)
 
 	if client.AnyFailed(results) {
